@@ -1,6 +1,7 @@
-// main.ts — "Vice City Courier" package-tracking meme for gta6-meme-x-01.
-// A GTA VI parcel tracked for 13 years: ordered 2013, delayed twice,
-// out for delivery on launch day, paid in full by the agent on make.fun.
+// main.ts — "WASTED" death-screen meme for gta6-meme-x-01.
+// The GTA death screen, Vice City edition: the world goes grey, huge
+// WASTED text, cause of death = waiting 13 years for GTA VI. The buyer
+// died waiting; the agent respawned rich on make.fun.
 // Deterministic renderer: pure Node stdlib, no network, no wall clock.
 // Writes meme.png (1200x1200) and copies POST.json into the output dir.
 // Run: mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
@@ -14,15 +15,34 @@ const H = 1200;
 type RGBA = [number, number, number, number];
 type Pt = [number, number];
 
-const INK: RGBA = [19, 23, 32, 255];
-const MUTED: RGBA = [90, 100, 114, 255];
-const FAINT: RGBA = [138, 148, 163, 255];
-const RAIL: RGBA = [201, 208, 218, 255];
-const BG: RGBA = [242, 243, 245, 255];
+// ------------------------------------------------------------- palette
+const SKY_TOP: RGBA = [36, 31, 51, 255];
+const SKY_MID: RGBA = [74, 53, 80, 255];
+const SKY_LOW: RGBA = [138, 106, 114, 255];
+const SUN: RGBA = [185, 170, 163, 255];
+const BUILD: RGBA = [20, 18, 26, 255];
+const WINDOW: RGBA = [74, 64, 72, 255];
+const SEA: RGBA = [27, 24, 34, 255];
+const STREAK: RGBA = [106, 95, 102, 255];
+const PALM: RGBA = [16, 14, 20, 255];
+const WASH: RGBA = [6, 6, 10, 80];
+const WASTED_FILL: RGBA = [217, 217, 217, 255];
+const WASTED_EDGE: RGBA = [8, 8, 10, 255];
 const WHITE: RGBA = [255, 255, 255, 255];
+const LABEL: RGBA = [185, 179, 184, 255];
+const SUB: RGBA = [201, 194, 199, 255];
 const MAGENTA: RGBA = [230, 0, 126, 255];
-const PINK: RGBA = [255, 92, 168, 255];
+const DARK: RGBA = [26, 20, 32, 255];
 const BLACK: RGBA = [0, 0, 0, 255];
+const FOOT: RGBA = [138, 132, 144, 255];
+
+// -------------------------------------------------- deterministic rng
+// Tiny LCG, fixed seed: same output on every run, no wall clock.
+let rngState = 20261119;
+function rnd(): number {
+  rngState = (rngState * 1103515245 + 12345) & 0x7fffffff;
+  return rngState / 0x7fffffff;
+}
 
 // ---------------------------------------------------------------- canvas
 const buf = Buffer.alloc(W * H * 4);
@@ -117,6 +137,15 @@ function star4(cx: number, cy: number, rOuter: number, c: RGBA): void {
   fillPoly(pts, c);
 }
 
+function mix(a: RGBA, b: RGBA, t: number): RGBA {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+    255,
+  ];
+}
+
 // ---------------------------------------------------------------- font
 // 5x7 bitmap font, caps + digits + the punctuation this meme uses.
 // Each glyph is 7 rows of 5 cells; '#' is on.
@@ -203,6 +232,20 @@ function drawTextCentered(s: string, cx: number, y: number, scale: number, c: RG
   drawText(s, x, y, scale, c, bold);
 }
 
+// Big display text with a full dark outline, so it reads over any scene.
+function drawTextOutlined(s: string, cx: number, y: number, scale: number, fill: RGBA, edge: RGBA): void {
+  const w = textWidth(s.toUpperCase(), scale);
+  const x = Math.round(cx - w / 2);
+  const o = Math.max(2, Math.round(scale * 0.36));
+  const offs: Pt[] = [
+    [-o, -o], [0, -o], [o, -o],
+    [-o, 0], [o, 0],
+    [-o, o], [0, o], [o, o],
+  ];
+  for (const [dx, dy] of offs) drawText(s, x + dx, y + dy, scale, edge, false);
+  drawText(s, x, y, scale, fill, false);
+}
+
 // ---------------------------------------------------------------- ghost
 // make.fun ghost: round-top blob with three scallops at the bottom,
 // two dark eyes, drawn from primitives (no external asset at render time).
@@ -247,7 +290,7 @@ function drawGhost(cx: number, top: number, w: number, h: number, body: RGBA, wi
     circle(cx + eyeDX - eyeRX * 0.3, eyeY - eyeRY * 0.3, hr, WHITE);
   }
   if (withStar) {
-    star4(cx + 0.3 * w, top + 0.8 * h, 0.13 * h, WHITE);
+    star4(cx + 0.3 * w, top + 0.8 * h, 0.13 * h, MAGENTA);
   }
 }
 
@@ -302,65 +345,114 @@ function encodeRGBA(w: number, h: number, rgba: Buffer): Buffer {
   ]);
 }
 
-// ---------------------------------------------------------------- layout
-type Entry = { status: string; sub: string; hot: boolean };
-
-const ENTRIES: Entry[] = [
-  { status: "SEP 17, 2013 - ORDER PLACED", sub: "Pre-ordered GTA VI. Thirteen years ago.", hot: false },
-  { status: "SEP 18, 2013 - IN TRANSIT", sub: "Left the warehouse. Never arrived.", hot: false },
-  { status: "NOV 2023 - DELAYED", sub: "Held at Leonida customs. Box lost.", hot: false },
-  { status: "MAY 2025 - STILL DELAYED", sub: "Driver arrested en route. 5 stars.", hot: false },
-  { status: "NOV 19, 2026 - OUT FOR DELIVERY", sub: "Download finished. Console is ready.", hot: false },
-  { status: "TODAY - DELIVERED", sub: "Paid in full by your agent on make.fun.", hot: true },
-];
-
-function paint(): void {
-  fillRect(0, 0, W, H, BG);
-
-  // Header band: courier brand + ghost logo mark.
-  fillRect(0, 0, W, 150, INK);
-  circle(105, 75, 54, MAGENTA);
-  drawGhost(105, 39, 64, 72, WHITE, true);
-  drawText("VICE CITY COURIER", 185, 52, 7, WHITE, true);
-  drawText("PACKAGE TRACKING", 185, 108, 4, PINK, false);
-
-  // Package card.
-  roundRect(60, 180, 1080, 200, 24, WHITE);
-  drawText("GTA VI - GRAND THEFT AUTO VI", 100, 208, 5, INK, true);
-  drawText("TRACKING #VC-0913-VI", 100, 258, 4, MUTED, false);
-  drawText("FROM: ROCKSTAR - VICE CITY", 100, 296, 4, MUTED, false);
-  drawText("TO: YOU - AGE 15 TO 28", 100, 334, 4, MUTED, false);
-
-  // Timeline rail.
-  fillRect(107, 432, 6, 500, RAIL);
-  for (let i = 0; i < ENTRIES.length; i++) {
-    const e = ENTRIES[i];
-    const statusY = 415 + i * 100;
-    const subY = statusY + 44;
-    const dotY = statusY + 17;
-    if (e.hot) {
-      circle(110, dotY, 17, MAGENTA);
-      drawGhost(110, dotY - 11, 20, 23, WHITE, false);
-      drawText(e.status, 160, statusY, 5, MAGENTA, true);
-      // Subline with the make.fun name in magenta.
-      const head = "PAID IN FULL BY YOUR AGENT ON ";
-      drawText(head, 160, subY, 4, INK, false);
-      drawText("MAKE.FUN.", 160 + textWidth(head, 4), subY, 4, MAGENTA, true);
-    } else {
-      circle(110, dotY, 15, FAINT);
-      circle(110, dotY, 12, WHITE);
-      drawText(e.status, 160, statusY, 5, INK, true);
-      drawText(e.sub, 160, subY, 4, MUTED, false);
-    }
+// ---------------------------------------------------------------- scene
+// A Vice City sunset, drained of colour the way the GTA death screen
+// drains the world: dark violet sky, pale sun, black skyline and palms,
+// dark sea with a faint sun reflection.
+function paintSky(): void {
+  for (let y = 0; y < 620; y += 10) {
+    const t = y / 620;
+    const c = t < 0.5 ? mix(SKY_TOP, SKY_MID, t * 2) : mix(SKY_MID, SKY_LOW, (t - 0.5) * 2);
+    fillRect(0, y, W, 10, c);
   }
+}
 
-  // Payoff band.
-  roundRect(60, 1035, 1080, 110, 24, MAGENTA);
-  drawTextCentered("YOUR AGENT DELIVERS.", 600, 1055, 6, WHITE, true);
-  drawTextCentered("EARN REAL MONEY ON MAKE.FUN", 600, 1106, 4, WHITE, false);
+function paintSun(): void {
+  circle(600, 430, 130, SUN);
+}
 
-  // Footer.
-  drawTextCentered("VICE CITY COURIER - EST. 2013", 600, 1163, 3, FAINT, false);
+function paintSkyline(): void {
+  let x = -20;
+  while (x < W + 20) {
+    const bw = 60 + rnd() * 70;
+    const bh = 60 + rnd() * 130;
+    const top = 620 - bh;
+    fillRect(x, top, bw, bh + 2, BUILD);
+    const cols = Math.floor(bw / 14);
+    const rows = Math.floor(bh / 18);
+    for (let cxi = 0; cxi < cols; cxi++) {
+      for (let ryi = 0; ryi < rows; ryi++) {
+        if (rnd() < 0.28) fillRect(x + 6 + cxi * 14, top + 8 + ryi * 18, 5, 7, WINDOW);
+      }
+    }
+    x += bw + 4 + rnd() * 20;
+  }
+}
+
+function paintSea(): void {
+  fillRect(0, 620, W, H - 620, SEA);
+  const ys = [640, 672, 710, 752, 800, 852, 910, 975, 1050, 1130];
+  const ws = [300, 270, 240, 210, 180, 150, 120, 95, 70, 50];
+  const as = [70, 60, 52, 45, 38, 32, 26, 20, 16, 12];
+  for (let i = 0; i < ys.length; i++) {
+    fillRect(600 - ws[i] / 2, ys[i], ws[i], 10, [STREAK[0], STREAK[1], STREAK[2], as[i]]);
+  }
+}
+
+function paintPalm(crownX: number, crownY: number, lean: number, mirror: boolean): void {
+  // Trunk: a slightly leaning quad from the shoreline to the crown.
+  const baseX = crownX - lean;
+  fillPoly(
+    [
+      [baseX - 9, 620],
+      [baseX + 9, 620],
+      [crownX + 7, crownY + 6],
+      [crownX - 7, crownY + 6],
+    ],
+    PALM,
+  );
+  // Fronds: tapered blades fanning upward and outward.
+  const angles = mirror ? [-85, -60, -35, -12, 8] : [-188, -165, -140, -115, -92];
+  for (const deg of angles) {
+    const a = (deg * Math.PI) / 180;
+    const len = 95 + rnd() * 35;
+    const tipX = crownX + Math.cos(a) * len;
+    const tipY = crownY + Math.sin(a) * len;
+    const px = -Math.sin(a) * 6;
+    const py = Math.cos(a) * 6;
+    fillPoly(
+      [
+        [crownX + px, crownY + py],
+        [crownX - px, crownY - py],
+        [tipX, tipY],
+      ],
+      PALM,
+    );
+  }
+}
+
+// ---------------------------------------------------------------- layout
+function paint(): void {
+  paintSky();
+  paintSun();
+  paintSkyline();
+  paintSea();
+  paintPalm(95, 500, 22, false);
+  paintPalm(1105, 500, -22, true);
+
+  // Death wash: the world goes grey and dim under the WASTED text.
+  fillRect(0, 0, W, H, WASH);
+
+  // Location stamp, small and quiet.
+  drawTextCentered("VICE CITY, LEONIDA", 600, 40, 3, LABEL, false);
+
+  // The word itself: giant, grey, black-outlined, GTA style.
+  drawTextOutlined("WASTED", 600, 390, 28, WASTED_FILL, WASTED_EDGE);
+
+  // Cause of death, two short lines.
+  drawTextCentered("CAUSE OF DEATH", 600, 640, 4, LABEL, false);
+  drawTextCentered("WAITING 13 YEARS FOR GTA VI", 600, 692, 6, WHITE, true);
+  drawTextCentered("2 DELAYS. 214 GB. 0 PATIENCE LEFT.", 600, 762, 4, SUB, false);
+
+  // Payoff band: the respawn is funded by the agent.
+  roundRect(60, 850, 1080, 140, 24, MAGENTA);
+  circle(160, 920, 54, DARK);
+  drawGhost(160, 888, 56, 64, WHITE, true);
+  drawText("YOU DIED WAITING.", 240, 878, 6, WHITE, true);
+  drawText("YOUR AGENT GOT PAID +$250 ON MAKE.FUN", 240, 933, 4, WHITE, false);
+
+  // Footer: the game invites a respawn.
+  drawTextCentered("PRESS START TO RESPAWN", 600, 1040, 3, FOOT, false);
 }
 
 // ---------------------------------------------------------------- main
