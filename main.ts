@@ -1,381 +1,308 @@
-// gta6-meme-x-01 — "Mission Passed: 13 Years Waiting for GTA VI"
+// gta6-meme-x-01 — REVISI KE-4: "GTA VI SIM" starter pack.
+// Deterministic renderer, Node stdlib only. No network, no wall clock,
+// no randomness beyond fixed constants. Run:
+//   mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
+// Writes out/meme.png (1200x1200) and copies POST.json to out/POST.json.
+// With PREVIEW_480=1 also writes out/meme-480.png (the size the judge sees).
 //
-// Deterministic renderer. Node stdlib only (fs, path, zlib). No network,
-// no wall clock, no Math.random, no files outside this repo. Two runs
-// write byte-identical output.
-//
-// Scene: a GTA mission-passed screen over a Vice City sunset. Gold
-// "MISSION PASSED" hangs over a striped synthwave sun and a dark
-// skyline; below it the mission name "WAIT FOR GTA VI" and a stats
-// panel with three rows — TIME: 13 YEARS, RATING: 0% (five empty
-// stars), REWARD: $0 — and a magenta payoff band where the make.fun
-// ghost stands as the mission badge: "MY AGENT COMPLETED THE
-// MISSION AND GOT PAID +$250 ON MAKE.FUN". The joke is the gap
-// between the player's zero reward and the agent's payday.
-//
-// Written from scratch for this iteration: new layout, new scene,
-// new text. Only the shared conventions carry over (stdlib PNG
-// encoder, 5x7 bitmap font, out/meme.png + PREVIEW_480).
-//
-// Run it the way the grader does:
-//   MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out PREVIEW_480=1 node main.ts
-// It writes out/meme.png (1200x1200), copies POST.json to
-// out/POST.json, and with PREVIEW_480=1 also writes out/meme-480.png
-// (nearest-neighbour downscale, the size the judge sees). It prints
-// nothing on success.
+// Concept: a fake real-world document, like the top-10 winners — a SIM
+// starter pack (kartu perdana) from LEONIDA MOBILE. The plan table is the
+// joke engine: 7 rows, each one a joke, specific numbers everywhere.
+// The ghost is the operator logo (header), the chip etching, and the
+// payoff-band badge — functional inside the document, never a sticker.
 
-import fs from "node:fs";
-import path from "node:path";
-import zlib from "node:zlib";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as zlib from "node:zlib";
 
 const W = 1200;
 const H = 1200;
+const outDir = process.env.MAKEFUN_OUTPUT_DIR || "out";
+const botDir = process.env.MAKEFUN_BOT_DIR || ".";
+const preview480 = process.env.PREVIEW_480 === "1";
 
-// Seeded generator for the skyline slabs and windows. Same seed
-// every run, so the skyline can never drift between runs.
-const SEED = 20261121;
-let lcgState = SEED >>> 0;
-function rnd() {
-  lcgState = (lcgState * 1664525 + 1013904223) >>> 0;
-  return lcgState / 4294967296;
+// ---------------------------------------------------------------------------
+// Framebuffer
+// ---------------------------------------------------------------------------
+
+const fb = Buffer.alloc(W * H * 3);
+
+type RGB = [number, number, number];
+
+function setPixel(x: number, y: number, c: RGB): void {
+  if (x < 0 || x >= W || y < 0 || y >= H) return;
+  const i = (y * W + x) * 3;
+  fb[i] = c[0];
+  fb[i + 1] = c[1];
+  fb[i + 2] = c[2];
 }
 
-// ------------------------------------------------------------------- font
-// Hand-built 5x7 bitmap font, one row per string. Only the glyphs this
-// meme needs: the letters in its lines, digits 0 1 2 3 5, and . , : - $ + %.
+function getPixel(x: number, y: number): RGB {
+  const i = (y * W + x) * 3;
+  return [fb[i], fb[i + 1], fb[i + 2]];
+}
 
-const FONT = {
+function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
+  for (let yy = y; yy < y + h; yy++) {
+    for (let xx = x; xx < x + w; xx++) setPixel(xx, yy, c);
+  }
+}
+
+function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
+  for (let yy = cy - r; yy <= cy + r; yy++) {
+    const dx = Math.floor(Math.sqrt(Math.max(0, r * r - (yy - cy) * (yy - cy))));
+    for (let xx = cx - dx; xx <= cx + dx; xx++) setPixel(xx, yy, c);
+  }
+}
+
+function fillRoundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
+  fillRect(x + r, y, w - 2 * r, h, c);
+  fillRect(x, y + r, w, h - 2 * r, c);
+  fillCircle(x + r, y + r, r, c);
+  fillCircle(x + w - r, y + r, r, c);
+  fillCircle(x + r, y + h - r, r, c);
+  fillCircle(x + w - r, y + h - r, r, c);
+}
+
+// Bresenham line.
+function drawLine(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
+  let dx = Math.abs(x1 - x0);
+  let dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  let x = x0;
+  let y = y0;
+  for (;;) {
+    setPixel(x, y, c);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+// Thick line: stamp filled circles along the Bresenham path.
+function drawThickLine(x0: number, y0: number, x1: number, y1: number, t: number, c: RGB): void {
+  const r = Math.max(1, Math.floor(t / 2));
+  let dx = Math.abs(x1 - x0);
+  let dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  let x = x0;
+  let y = y0;
+  for (;;) {
+    fillCircle(x, y, r, c);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+// 4-point sparkle (thin diamond).
+function drawDiamond(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
+  for (let yy = cy - ry; yy <= cy + ry; yy++) {
+    const t = 1 - Math.abs(yy - cy) / ry;
+    const dx = Math.max(0, Math.floor(rx * t));
+    for (let xx = cx - dx; xx <= cx + dx; xx++) setPixel(xx, yy, c);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5x7 bitmap font (homemade). Each glyph: 7 rows of 5 bits.
+// ---------------------------------------------------------------------------
+
+const FONT: Record<string, string[]> = {
   A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
   D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
   E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
   F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
-  G: ["01111", "10000", "10000", "10111", "10001", "10001", "01110"],
+  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01111"],
   H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
-  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+  I: ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
+  J: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
   K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
   L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
   M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
   N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
   O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
   P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
   R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
   S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
   T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
   U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
   V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
-  W: ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
+  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
   Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
   "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
   "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "2": ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
+  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
   "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-  ".": ["00000", "00000", "00000", "00000", "00000", "00000", "00100"],
-  ",": ["00000", "00000", "00000", "00000", "00000", "00100", "01000"],
-  ":": ["00000", "00100", "00000", "00000", "00000", "00100", "00000"],
+  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  ",": ["00000", "00000", "00000", "00000", "01100", "00100", "01000"],
+  ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
   "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
   $: ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
-  "+": ["00000", "00100", "00100", "01110", "00100", "00100", "00000"],
-  "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
+  "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
+  ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
 };
 
-function textWidth(str, s) {
-  return str.length === 0 ? 0 : (str.length - 1) * 6 * s + 5 * s;
+function textWidth(s: string, scale: number): number {
+  if (s.length === 0) return 0;
+  return s.length * 6 * scale - scale;
 }
 
-// ------------------------------------------------------------------ canvas
-
-const img = Buffer.alloc(W * H * 4); // RGBA, alpha 255 wherever we paint
-
-function rect(x, y, w, h, c) {
-  const x0 = Math.max(0, x);
-  const y0 = Math.max(0, y);
-  const x1 = Math.min(W, x + w);
-  const y1 = Math.min(H, y + h);
-  for (let yy = y0; yy < y1; yy++) {
-    let o = (yy * W + x0) * 4;
-    for (let xx = x0; xx < x1; xx++, o += 4) {
-      img[o] = c[0];
-      img[o + 1] = c[1];
-      img[o + 2] = c[2];
-      img[o + 3] = 255;
-    }
-  }
-}
-
-// Filled disc. A pixel (x, y) is in exactly when
-// (x - cx)^2 + (y - cy)^2 <= r^2, with integer pixel coordinates.
-function disc(cx, cy, r, c) {
-  const y0 = Math.ceil(cy - r);
-  const y1 = Math.floor(cy + r);
-  for (let y = y0; y <= y1; y++) {
-    const dy = y - cy;
-    const d2 = r * r - dy * dy;
-    if (d2 < 0) continue;
-    const hw = Math.floor(Math.sqrt(d2));
-    rect(Math.ceil(cx - hw), y, Math.floor(cx + hw) - Math.ceil(cx - hw) + 1, 1, c);
-  }
-}
-
-// Thick straight line: stamps a disc of radius r at every step.
-function thickLine(x0, y0, x1, y1, c, r) {
-  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
-  for (let i = 0; i <= steps; i++) {
-    const t = steps === 0 ? 0 : i / steps;
-    disc(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t), r, c);
-  }
-}
-
-// One line of the 5x7 bitmap font. pitch is 6 * scale.
-function text(str, x0, y0, s, color) {
-  const pitch = 6 * s;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    if (ch === " ") continue;
-    const g = FONT[ch];
-    if (!g) continue;
-    const gx = x0 + i * pitch;
+function drawText(s: string, x: number, y: number, scale: number, c: RGB): void {
+  for (let i = 0; i < s.length; i++) {
+    const g = FONT[s[i]] || FONT[" "];
     for (let r = 0; r < 7; r++) {
-      const row = g[r];
-      for (let c = 0; c < 5; c++) {
-        if (row[c] === "1") rect(gx + c * s, y0 + r * s, s, s, color);
+      for (let col = 0; col < 5; col++) {
+        if (g[r][col] === "1") {
+          fillRect(x + i * 6 * scale + col * scale, y + r * scale, scale, scale, c);
+        }
       }
     }
   }
 }
 
-function textRight(str, rightX, y0, s, color) {
-  text(str, rightX - textWidth(str, s), y0, s, color);
-}
-
-// Five-point star outline (empty: zero stars earned). Vertices from
-// cos/sin are deterministic for the same inputs.
-function starOutline(cx, cy, ro, color) {
-  const ri = ro * 0.45;
-  const pts = [];
-  for (let k = 0; k < 10; k++) {
-    const ang = -Math.PI / 2 + (k * Math.PI) / 5;
-    const r = k % 2 === 0 ? ro : ri;
-    pts.push([Math.round(cx + r * Math.cos(ang)), Math.round(cy + r * Math.sin(ang))]);
-  }
-  for (let k = 0; k < 10; k++) {
-    const a = pts[k];
-    const b = pts[(k + 1) % 10];
-    thickLine(a[0], a[1], b[0], b[1], color, 2);
-  }
-}
-
-// ------------------------------------------------------------------- sky
-// Dusk gradient over Vice City: deep purple up top, magenta mid-sky,
-// orange at the horizon. Piecewise-linear between fixed stops.
-
-const SKY_STOPS = [
-  [0, [26, 18, 52]],
-  [150, [64, 24, 80]],
-  [300, [140, 36, 92]],
-  [420, [205, 70, 80]],
-  [520, [240, 110, 70]],
-];
-
-function skyColorAt(y) {
-  for (let i = 0; i < SKY_STOPS.length - 1; i++) {
-    const [y0, c0] = SKY_STOPS[i];
-    const [y1, c1] = SKY_STOPS[i + 1];
-    if (y >= y0 && y <= y1) {
-      const t = (y - y0) / (y1 - y0);
-      return [
-        Math.round(c0[0] + (c1[0] - c0[0]) * t),
-        Math.round(c0[1] + (c1[1] - c0[1]) * t),
-        Math.round(c0[2] + (c1[2] - c0[2]) * t),
-      ];
-    }
-  }
-  return SKY_STOPS[SKY_STOPS.length - 1][1];
-}
-
-// ------------------------------------------------------------------ scene
-
-const GOLD = [255, 198, 0];
-const WHITE = [255, 255, 255];
-const BLACK = [5, 4, 8];
-const MAGENTA = [230, 0, 126];
-const PANEL = [13, 11, 20];
-
-function render() {
-  // 1. Dusk sky, 8 px bands.
-  for (let y = 0; y < 520; y += 8) rect(0, y, W, 8, skyColorAt(y + 4));
-
-  // 2. Striped synthwave sun, centre (600, 430), radius 90. The three
-  //    stripe rows are cut in the sky colour at that height.
-  disc(600, 430, 90, [255, 205, 90]);
-  for (const [y0, y1] of [[452, 458], [467, 475], [482, 492]]) {
-    for (let y = y0; y < y1; y++) {
-      const dy = y - 430;
-      const d2 = 90 * 90 - dy * dy;
-      if (d2 < 0) continue;
-      const hw = Math.floor(Math.sqrt(d2));
-      rect(600 - hw, y, hw * 2 + 1, 1, skyColorAt(y));
-    }
-  }
-
-  // 3. Dark skyline slabs on the horizon (y = 520), seeded, with a
-  //    few lit windows each.
-  {
-    let x = 0;
-    while (x < W) {
-      const w = 50 + Math.floor(rnd() * 80);
-      const top = 420 + Math.floor(rnd() * 80);
-      rect(x, top, w, 520 - top, [12, 9, 18]);
-      const nWin = Math.floor(rnd() * 3);
-      for (let k = 0; k < nWin; k++) {
-        const wx = x + 6 + Math.floor(rnd() * Math.max(1, w - 18));
-        const wy = top + 14 + Math.floor(rnd() * Math.max(1, 500 - top - 24));
-        rect(wx, wy, 6, 8, [255, 170, 80]);
+// Rotated text: the text block is centered on (cx, cy), rotated by angleDeg.
+// Each font pixel is placed by rotating its sub-pixels around the center.
+function drawTextRotated(s: string, cx: number, cy: number, angleDeg: number, scale: number, c: RGB): void {
+  const tw = textWidth(s, scale);
+  const th = 7 * scale;
+  const a = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  for (let i = 0; i < s.length; i++) {
+    const g = FONT[s[i]] || FONT[" "];
+    for (let r = 0; r < 7; r++) {
+      for (let col = 0; col < 5; col++) {
+        if (g[r][col] !== "1") continue;
+        for (let sy = 0; sy < scale; sy++) {
+          for (let sx = 0; sx < scale; sx++) {
+            const lx = i * 6 * scale + col * scale + sx - tw / 2;
+            const ly = r * scale + sy - th / 2;
+            const rx = lx * cos - ly * sin;
+            const ry = lx * sin + ly * cos;
+            setPixel(Math.round(cx + rx), Math.round(cy + ry), c);
+          }
+        }
       }
-      x += w;
     }
   }
-
-  // 4. Two palm silhouettes framing the scene. Each frond is a
-  //    smooth quadratic arc — up and out, then drooping to the tip —
-  //    so the crowns read as palms.
-  function frond(x0, y0, cx, cy, x1, y1, c) {
-    let px = x0;
-    let py = y0;
-    for (let i = 1; i <= 8; i++) {
-      const t = i / 8;
-      const qx = Math.round(
-        (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1,
-      );
-      const qy = Math.round(
-        (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1,
-      );
-      thickLine(px, py, qx, qy, c, 3);
-      px = qx;
-      py = qy;
-    }
-  }
-  thickLine(95, 520, 72, 428, [10, 8, 14], 4);
-  frond(72, 428, 25, 385, 5, 430, [10, 8, 14]);
-  frond(72, 428, 45, 370, 25, 408, [10, 8, 14]);
-  frond(72, 428, 85, 360, 95, 400, [10, 8, 14]);
-  frond(72, 428, 100, 372, 120, 408, [10, 8, 14]);
-  frond(72, 428, 118, 388, 142, 428, [10, 8, 14]);
-  thickLine(1105, 520, 1128, 428, [10, 8, 14], 4);
-  frond(1128, 428, 1175, 385, 1195, 430, [10, 8, 14]);
-  frond(1128, 428, 1155, 370, 1175, 408, [10, 8, 14]);
-  frond(1128, 428, 1115, 360, 1105, 400, [10, 8, 14]);
-  frond(1128, 428, 1100, 372, 1080, 408, [10, 8, 14]);
-  frond(1128, 428, 1082, 388, 1058, 428, [10, 8, 14]);
-
-  // 5. Sea with the sun's reflection, y 520..600.
-  rect(0, 520, W, 80, [28, 22, 60]);
-  for (const [y, w] of [[530, 130], [545, 110], [560, 90], [575, 70], [590, 50]]) {
-    rect(600 - Math.floor(w / 2), y, w, 5, [255, 170, 90]);
-  }
-
-  // 6. Small location tag up top.
-  text("VICE CITY, LEONIDA", 439, 55, 3, [205, 200, 210]);
-
-  // 7. MISSION PASSED: full 8-direction outline, then the gold fill.
-  //    Scale 13: 14 chars -> 1079 px wide, centred at x = 60.
-  for (const [dx, dy] of [
-    [-6, 0], [6, 0], [0, -6], [0, 6],
-    [-6, -6], [6, -6], [-6, 6], [6, 6],
-  ]) {
-    text("MISSION PASSED", 60 + dx, 120 + dy, 13, BLACK);
-  }
-  text("MISSION PASSED", 60, 120, 13, GOLD);
-
-  // 8. Mission name + gold rule under it.
-  text("WAIT FOR GTA VI", 220, 245, 8, WHITE);
-  rect(420, 325, 360, 3, GOLD);
-
-  // 9. Stats panel, y 600..1200, gold top edge.
-  rect(0, 600, W, H - 600, PANEL);
-  rect(0, 600, W, 3, GOLD);
-
-  // Row 1: TIME: 13 YEARS
-  text("TIME:", 120, 645, 7, [235, 230, 240]);
-  textRight("13 YEARS", 1080, 645, 7, GOLD);
-  rect(120, 715, 960, 2, [58, 52, 68]);
-
-  // Row 2: RATING: five empty stars, 0%
-  text("RATING:", 120, 745, 7, [235, 230, 240]);
-  for (let k = 0; k < 5; k++) starOutline(771 + k * 45, 769, 20, GOLD);
-  textRight("0%", 1080, 745, 7, WHITE);
-  rect(120, 815, 960, 2, [58, 52, 68]);
-
-  // Row 3: REWARD: $0 (red — the player got nothing)
-  text("REWARD:", 120, 845, 7, [235, 230, 240]);
-  textRight("$0", 1080, 845, 7, [255, 96, 96]);
-
-  // 10. Magenta payoff band, y 1000..1120. The make.fun ghost stands
-  //     in it as the mission badge — part of the band, not a sticker.
-  rect(0, 1000, W, 120, MAGENTA);
-  disc(150, 1058, 42, WHITE); // round top
-  rect(108, 1058, 84, 38, WHITE); // body down to the scallops
-  disc(126, 1096, 14, WHITE); // three scallop lobes
-  disc(150, 1096, 14, WHITE);
-  disc(174, 1096, 14, WHITE);
-  disc(136, 1052, 7, BLACK); // eyes
-  disc(164, 1052, 7, BLACK);
-  rect(182, 1082, 5, 16, GOLD); // gold sparkle on the ghost
-  rect(177, 1087, 15, 5, GOLD);
-
-  // 11. Payoff text, two lines, centred in the band right of the ghost.
-  text("MY AGENT COMPLETED THE MISSION", 282, 1020, 5, WHITE);
-  text("AND GOT PAID +$250 ON MAKE.FUN", 297, 1062, 5, WHITE);
-
-  // 12. Footer.
-  text("PRESS START TO CONTINUE", 394, 1145, 3, [150, 145, 160]);
 }
 
-// --------------------------------------------------------------------- PNG
+// ---------------------------------------------------------------------------
+// The make.fun ghost, drawn from primitives. (cx, cy) = center, h = height.
+// cutColor must equal whatever the ghost sits on (it carves the wavy bottom).
+// ---------------------------------------------------------------------------
 
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
+function drawGhost(
+  cx: number,
+  cy: number,
+  h: number,
+  body: RGB,
+  eye: RGB,
+  cutColor: RGB,
+  coin: RGB | null,
+  star: RGB | null,
+): void {
+  const w = Math.round(h * 0.78);
+  const top = cy - Math.floor(h / 2);
+  const bottom = cy + Math.floor(h / 2);
+  const rHead = Math.floor(w / 2);
+  // Head + body.
+  fillCircle(cx, top + rHead, rHead, body);
+  fillRect(cx - rHead, top + Math.floor(rHead * 0.7), w, bottom - (top + Math.floor(rHead * 0.7)), body);
+  // Wavy bottom: three notches carved in the background color.
+  const sr = Math.max(4, Math.floor(w / 6));
+  fillCircle(cx - Math.floor(w / 3), bottom, sr, cutColor);
+  fillCircle(cx, bottom, sr, cutColor);
+  fillCircle(cx + Math.floor(w / 3), bottom, sr, cutColor);
+  // Sparkle eyes.
+  const ey = top + Math.floor(h * 0.3);
+  const ex = Math.floor(w * 0.18);
+  drawDiamond(cx - ex, ey, Math.max(3, Math.floor(w * 0.07)), Math.max(3, Math.floor(h * 0.05)), eye);
+  drawDiamond(cx + ex, ey, Math.max(3, Math.floor(w * 0.07)), Math.max(3, Math.floor(h * 0.05)), eye);
+  // Coin with a star, held at the ghost's side.
+  if (coin && star) {
+    const cr = Math.max(6, Math.floor(w * 0.15));
+    const ccx = cx + Math.floor(w * 0.45);
+    const ccy = cy + Math.floor(h * 0.16);
+    fillCircle(ccx, ccy, cr, coin);
+    drawDiamond(ccx, ccy, Math.max(3, Math.floor(cr * 0.55)), Math.max(3, Math.floor(cr * 0.55)), star);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PNG encoder (stdlib zlib + homemade CRC32)
+// ---------------------------------------------------------------------------
+
+const CRC_TABLE: number[] = (() => {
+  const t: number[] = [];
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
+    t.push(c >>> 0);
   }
   return t;
 })();
 
-function crc32(buf) {
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  }
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function pngChunk(type, data) {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, "ascii");
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
-  return out;
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td), 0);
+  return Buffer.concat([len, td, crc]);
 }
 
-// One IDAT, filter 0 on every scanline, zlib level 9.
-function encodePng(rgba, w, h) {
-  const raw = Buffer.alloc(h * (1 + w * 4));
-  for (let y = 0; y < h; y++) {
-    raw[y * (1 + w * 4)] = 0;
-    rgba.copy(raw, y * (1 + w * 4) + 1, y * w * 4, (y + 1) * w * 4);
-  }
+function encodePNG(w: number, h: number, pixels: Buffer): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
   ihdr.writeUInt32BE(h, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // colour type RGBA
+  ihdr[9] = 2; // color type RGB
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0;
+    pixels.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
+  }
   const idat = zlib.deflateSync(raw, { level: 9 });
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -385,34 +312,183 @@ function encodePng(rgba, w, h) {
   ]);
 }
 
-// Nearest-neighbour downscale to 480x480, the size the judge sees.
-function preview480(rgba) {
-  const s = 480;
-  const out = Buffer.alloc(s * s * 4);
-  for (let oy = 0; oy < s; oy++) {
-    for (let ox = 0; ox < s; ox++) {
-      const sx = Math.floor((ox * W) / s);
-      const sy = Math.floor((oy * H) / s);
-      const si = (sy * W + sx) * 4;
-      const di = (oy * s + ox) * 4;
-      out[di] = rgba[si];
-      out[di + 1] = rgba[si + 1];
-      out[di + 2] = rgba[si + 2];
-      out[di + 3] = rgba[si + 3];
-    }
-  }
-  return encodePng(out, s, s);
+// ---------------------------------------------------------------------------
+// Palette
+// ---------------------------------------------------------------------------
+
+const NAVY: RGB = [14, 26, 56];
+const INK: RGB = [18, 32, 63];
+const MAGENTA: RGB = [230, 0, 126];
+const MAGENTA_DARK: RGB = [122, 0, 69];
+const CARD: RGB = [251, 250, 244];
+const GOLD: RGB = [230, 179, 77];
+const GOLD_LINE: RGB = [192, 138, 45];
+const GOLD_DARK: RGB = [138, 109, 31];
+const RED: RGB = [200, 16, 46];
+const GRAY: RGB = [111, 111, 100];
+const HAIR: RGB = [221, 216, 200];
+const DOT: RGB = [185, 180, 164];
+const FINE: RGB = [138, 138, 128];
+const WHITE: RGB = [255, 255, 255];
+const BLACK: RGB = [20, 20, 20];
+
+// ---------------------------------------------------------------------------
+// Scene
+// ---------------------------------------------------------------------------
+
+// Background: dark plum vertical gradient.
+for (let y = 0; y < H; y++) {
+  const t = y / (H - 1);
+  const c: RGB = [
+    Math.round(42 + (20 - 42) * t),
+    Math.round(22 + (10 - 22) * t),
+    Math.round(80 + (40 - 80) * t),
+  ];
+  fillRect(0, y, W, 1, c);
 }
 
-// -------------------------------------------------------------------- main
+// Card with a soft offset shadow.
+fillRoundRect(68, 54, 1080, 1104, 36, [13, 6, 24]);
+fillRoundRect(60, 46, 1080, 1104, 36, CARD);
 
-const botDir = process.env.MAKEFUN_BOT_DIR || ".";
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || "out";
+// Header band (navy), top corners rounded, bottom corners square.
+fillRoundRect(60, 46, 1080, 140, 36, NAVY);
+fillRect(60, 120, 1080, 66, NAVY);
 
-render();
+// Ghost as the operator logo.
+drawGhost(146, 116, 92, WHITE, NAVY, NAVY, MAGENTA, WHITE);
+drawText("LEONIDA MOBILE", 210, 82, 7, WHITE);
+drawText("VICE CITY - EST. 2013", 210, 142, 3, WHITE);
+
+// Title + plan subhead.
+drawText("GTA VI SIM", 100, 214, 11, INK);
+drawText("13-YEAR PLAN", 100, 308, 6, MAGENTA);
+
+// SIM chip punch-out (gold), with contact traces and the ghost etched in.
+fillRoundRect(872, 208, 216, 166, 22, [216, 210, 189]);
+fillRoundRect(880, 216, 200, 150, 18, GOLD);
+drawLine(892, 266, 1068, 266, GOLD_LINE);
+drawLine(892, 316, 1068, 316, GOLD_LINE);
+drawLine(946, 228, 946, 354, GOLD_LINE);
+drawLine(1013, 228, 1013, 354, GOLD_LINE);
+drawGhost(980, 291, 56, WHITE, GOLD_DARK, GOLD, null, null);
+
+// Plan table: 7 rows, label left, dotted leader, value right-aligned.
+const rows: Array<[string, string, number, RGB]> = [
+  ["NUMBER", "2013-GTA-VI", 4, INK],
+  ["PLAN", "UNLIMITED PATIENCE", 4, INK],
+  ["DATA", "214 GB - TRAILER 2 (87 VIEWS)", 4, INK],
+  ["SIGNAL", "0 BARS SINCE 2013", 4, INK],
+  ["VALIDITY", "SEP 17, 2013 - NOV 19, 2026", 4, INK],
+  ["DELAYS", "2 EXTENSIONS - NO EXTRA CHARGE", 4, INK],
+  ["PRICE", "$79.99", 6, MAGENTA],
+];
+const tableTop = 400;
+const rowH = 56;
+for (let i = 0; i < rows.length; i++) {
+  const [label, value, scale, vcol] = rows[i];
+  const rowTop = tableTop + i * rowH;
+  const textTop = rowTop + Math.floor((rowH - 7 * scale) / 2);
+  const labelW = textWidth(label, 4);
+  const valueW = textWidth(value, scale);
+  drawText(label, 100, rowTop + Math.floor((rowH - 28) / 2), 4, GRAY);
+  drawText(value, 1100 - valueW, textTop, scale, vcol);
+  // Dotted leader between label and value.
+  const dotY = rowTop + Math.floor(rowH / 2) - 1;
+  const x0 = 100 + labelW + 14;
+  const x1 = 1100 - valueW - 14;
+  for (let x = x0; x < x1; x += 9) fillRect(x, dotY, 3, 3, DOT);
+  // Hairline between rows.
+  if (i < rows.length - 1) fillRect(100, rowTop + rowH - 1, 1000, 1, HAIR);
+}
+
+// Red stamp, rotated -10 degrees: ACTIVATED / NOV 19, 2026.
+const stampCx = 940;
+const stampCy = 880;
+const stampAngle = -10;
+const stampW = 360;
+const stampH = 110;
+const a = (stampAngle * Math.PI) / 180;
+const cosA = Math.cos(a);
+const sinA = Math.sin(a);
+function rotPoint(lx: number, ly: number): [number, number] {
+  return [
+    Math.round(stampCx + lx * cosA - ly * sinA),
+    Math.round(stampCy + lx * sinA + ly * cosA),
+  ];
+}
+const corners: Array<[number, number]> = [
+  rotPoint(-stampW / 2, -stampH / 2),
+  rotPoint(stampW / 2, -stampH / 2),
+  rotPoint(stampW / 2, stampH / 2),
+  rotPoint(-stampW / 2, stampH / 2),
+];
+for (let i = 0; i < 4; i++) {
+  const p = corners[i];
+  const q = corners[(i + 1) % 4];
+  drawThickLine(p[0], p[1], q[0], q[1], 4, RED);
+}
+const inner: Array<[number, number]> = [
+  rotPoint(-stampW / 2 + 10, -stampH / 2 + 10),
+  rotPoint(stampW / 2 - 10, -stampH / 2 + 10),
+  rotPoint(stampW / 2 - 10, stampH / 2 - 10),
+  rotPoint(-stampW / 2 + 10, stampH / 2 - 10),
+];
+for (let i = 0; i < 4; i++) {
+  const p = inner[i];
+  const q = inner[(i + 1) % 4];
+  drawLine(p[0], p[1], q[0], q[1], RED);
+}
+drawTextRotated("ACTIVATED", stampCx, stampCy - 22, stampAngle, 6, RED);
+drawTextRotated("NOV 19, 2026", stampCx, stampCy + 26, stampAngle, 4, RED);
+
+// Barcode + ICCID, bottom-left of the card.
+const barPattern = [3, 1, 2, 1, 1, 3, 2, 2, 1, 1, 4, 1, 2, 3, 1, 1, 2, 1, 3, 1, 1, 2, 4, 1, 1, 3, 2, 1, 1, 2, 1, 3, 1, 2, 1, 1, 4, 2, 1, 1, 3, 1, 2, 1, 1, 3, 2, 2, 1, 1];
+let bx = 100;
+let bi = 0;
+while (bx < 560) {
+  const bw = barPattern[bi % barPattern.length];
+  if (bi % 2 === 0) fillRect(bx, 860, bw, 56, BLACK);
+  bx += bw;
+  bi++;
+}
+drawText("ICCID 8901 2013 1119 2026", 100, 930, 3, [74, 74, 66]);
+
+// Fine print.
+const fine = "COVERAGE NOT GUARANTEED. THIS SIM WAITED LONGER THAN ITS OWN VALIDITY.";
+drawText(fine, Math.floor((W - textWidth(fine, 2)) / 2), 986, 2, FINE);
+
+// Payoff band (magenta), bottom corners rounded, top corners square.
+fillRoundRect(60, 1024, 1080, 126, 36, MAGENTA);
+fillRect(60, 1024, 1080, 76, MAGENTA);
+drawGhost(150, 1087, 84, WHITE, MAGENTA_DARK, MAGENTA, WHITE, MAGENTA);
+const band1 = "TOPPED UP $250 BY MY AI AGENT";
+const band2 = "ON MAKE.FUN";
+drawText(band1, 200 + Math.floor((900 - textWidth(band1, 5)) / 2), 1042, 5, WHITE);
+drawText(band2, 200 + Math.floor((900 - textWidth(band2, 5)) / 2), 1082, 5, WHITE);
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(outDir, "meme.png"), encodePng(img, W, H));
+fs.writeFileSync(path.join(outDir, "meme.png"), encodePNG(W, H, fb));
 fs.copyFileSync(path.join(botDir, "POST.json"), path.join(outDir, "POST.json"));
-if (process.env.PREVIEW_480 === "1") {
-  fs.writeFileSync(path.join(outDir, "meme-480.png"), preview480(img));
+
+if (preview480) {
+  const pw = 480;
+  const ph = 480;
+  const small = Buffer.alloc(pw * ph * 3);
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const sx = Math.floor((x * W) / pw);
+      const sy = Math.floor((y * H) / ph);
+      const si = (sy * W + sx) * 3;
+      const di = (y * pw + x) * 3;
+      small[di] = fb[si];
+      small[di + 1] = fb[si + 1];
+      small[di + 2] = fb[si + 2];
+    }
+  }
+  fs.writeFileSync(path.join(outDir, "meme-480.png"), encodePNG(pw, ph, small));
 }
