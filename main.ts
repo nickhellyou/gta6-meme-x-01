@@ -3,19 +3,28 @@ import * as zlib from "zlib";
 import * as path from "path";
 
 // ---------------------------------------------------------------------------
-// X PREMIUM BILLING STATEMENT — gta6-meme-x-01 iteration (22 Nov 2026)
-// Concept: a monthly billing statement for X Premium. The joke is 13 years
-// of paying for a blue checkmark while waiting for GTA VI. The meme is
-// posted ON X and the bill is FOR X Premium — the meta twist is the joke.
-// Every line item is a joke with specific numbers. The make.fun payoff is
-// the document's own resolution: PAID IN FULL BY MY AI AGENT ON MAKE.FUN.
+// CONSTRUCTION BLUEPRINT — gta6-meme-x-01 iteration (22 Nov 2026)
+// Concept: a construction blueprint for GTA VI in Vice City. The joke is
+// 13 years of waiting, drawn as a building that was never built: a floor
+// plan with 4 rooms, a revision table (4 redesigns, 2 delays), a spec
+// table (foundation: 13 years of patience), and an APPROVED stamp. The
+// make.fun payoff is the document's own resolution: the construction was
+// FUNDED BY MY AI AGENT with a bounty it earned on make.fun.
+// Uniqueness: 0 hits for "blueprint" (and 0 for architect / floor plan /
+// construction drawing) in 5,660 swept titles + absent from the live top
+// 50. The blueprint is the only blue document in a sea of cream paper.
 // Written from scratch in this session. Deterministic: Node stdlib only,
-// no network, no wall clock, no randomness.
-// Usage: STYLE=light|dark MAKEFUN_OUTPUT_DIR=out PREVIEW_480=1 node main.ts
+// no network, no wall clock, no randomness, and NO environment variable
+// changes the picture — the X Premium entry died in validity with a
+// STYLE=light|dark branch in its renderer, so this renderer has exactly
+// one output, always.
+// Usage: MAKEFUN_OUTPUT_DIR=out PREVIEW_480=1 node main.ts
 // ---------------------------------------------------------------------------
 
 const W = 1200;
 const H = 1200;
+
+type RGB = [number, number, number];
 
 // ---------------------------------------------------------------------------
 // 5x7 bitmap font. '#' = on, '.' = off. Rows top to bottom, 7 rows each.
@@ -78,15 +87,12 @@ const FONT: Record<string, string[]> = {
   "@": [".###.", "#...#", "#.###", "#.#.#", "#.##.", "#....", ".###."],
   '"': [".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....."],
   ";": [".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."],
-  "[": [".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."],
-  "]": [".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."],
 };
 
 // ---------------------------------------------------------------------------
-// Canvas: RGB buffer + primitive drawing.
+// Canvas: RGB buffer + drawing primitives. All coordinates are integers;
+// every helper clips to the canvas.
 // ---------------------------------------------------------------------------
-type RGB = [number, number, number];
-
 class Canvas {
   w: number;
   h: number;
@@ -94,7 +100,7 @@ class Canvas {
   constructor(w: number, h: number) {
     this.w = w;
     this.h = h;
-    this.buf = Buffer.alloc(w * h * 3, 0);
+    this.buf = Buffer.alloc(w * h * 3);
   }
   set(x: number, y: number, c: RGB): void {
     const xi = Math.floor(x);
@@ -126,88 +132,136 @@ class Canvas {
       }
     }
   }
-  fillCircle(cx: number, cy: number, r: number, c: RGB): void {
-    const rr = Math.floor(r);
-    for (let dy = -rr; dy <= rr; dy++) {
-      const dx = Math.floor(Math.sqrt(Math.max(0, r * r - dy * dy)));
-      this.fillRect(cx - dx, cy + dy, dx * 2 + 1, 1, c);
+  line(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+    let x = x0;
+    let y = y0;
+    for (;;) {
+      this.set(x, y, c);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y += sy;
+      }
     }
   }
-  fillPolygon(pts: [number, number][], c: RGB): void {
+  thickLine(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    t: number,
+    c: RGB
+  ): void {
+    // Axis-aligned thick line only (walls); diagonals use line() instead.
+    if (y0 === y1) {
+      this.fillRect(Math.min(x0, x1), y0 - Math.floor(t / 2), Math.abs(x1 - x0), t, c);
+    } else if (x0 === x1) {
+      this.fillRect(x0 - Math.floor(t / 2), Math.min(y0, y1), t, Math.abs(y1 - y0), c);
+    } else {
+      this.line(x0, y0, x1, y1, c);
+    }
+  }
+  polyline(pts: [number, number][], c: RGB): void {
+    for (let i = 0; i + 1 < pts.length; i++) {
+      this.line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], c);
+    }
+  }
+  fillPoly(pts: [number, number][], c: RGB): void {
     let minY = Infinity;
     let maxY = -Infinity;
-    for (const p of pts) {
-      if (p[1] < minY) minY = p[1];
-      if (p[1] > maxY) maxY = p[1];
+    for (const [, y] of pts) {
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
     }
-    for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
+    for (let y = Math.ceil(minY); y <= Math.floor(maxY); y++) {
       const xs: number[] = [];
       for (let i = 0; i < pts.length; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % pts.length];
-        if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
-          xs.push(a[0] + ((y - a[1]) * (b[0] - a[0])) / (b[1] - a[1]));
+        const [x0, y0] = pts[i];
+        const [x1, y1] = pts[(i + 1) % pts.length];
+        if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+          xs.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
         }
       }
-      xs.sort((p, q) => p - q);
+      xs.sort((a, b) => a - b);
       for (let k = 0; k + 1 < xs.length; k += 2) {
         const xa = Math.ceil(xs[k]);
         const xb = Math.floor(xs[k + 1]);
-        if (xb >= xa) this.fillRect(xa, y, xb - xa + 1, 1, c);
+        for (let x = xa; x <= xb; x++) this.set(x, y, c);
       }
     }
   }
-  // 4-point sparkle (diamond star) centred at (cx, cy), radius r.
-  sparkle(cx: number, cy: number, r: number, c: RGB): void {
-    const k = 0.28;
-    this.fillPolygon(
-      [
-        [cx, cy - r],
-        [cx + r * k, cy - r * k],
-        [cx + r, cy],
-        [cx + r * k, cy + r * k],
-        [cx, cy + r],
-        [cx - r * k, cy + r * k],
-        [cx - r, cy],
-        [cx - r * k, cy - r * k],
-      ],
-      c
-    );
+  arc(
+    cx: number,
+    cy: number,
+    r: number,
+    a0deg: number,
+    a1deg: number,
+    c: RGB
+  ): void {
+    const steps = 24;
+    const pts: [number, number][] = [];
+    for (let i = 0; i <= steps; i++) {
+      const a = ((a0deg + ((a1deg - a0deg) * i) / steps) * Math.PI) / 180;
+      pts.push([
+        Math.round(cx + r * Math.cos(a)),
+        Math.round(cy + r * Math.sin(a)),
+      ]);
+    }
+    this.polyline(pts, c);
   }
-  textWidth(s: string, scale: number): number {
-    return s.length * 6 * scale - scale;
+  fillCircle(cx: number, cy: number, r: number, c: RGB): void {
+    const ri = Math.ceil(r);
+    for (let y = -ri; y <= ri; y++) {
+      for (let x = -ri; x <= ri; x++) {
+        if (x * x + y * y <= r * r) this.set(cx + x, cy + y, c);
+      }
+    }
+  }
+  circleOutline(cx: number, cy: number, r: number, c: RGB): void {
+    const steps = 72;
+    const pts: [number, number][] = [];
+    for (let i = 0; i <= steps; i++) {
+      const a = (i / steps) * 2 * Math.PI;
+      pts.push([
+        Math.round(cx + r * Math.cos(a)),
+        Math.round(cy + r * Math.sin(a)),
+      ]);
+    }
+    this.polyline(pts, c);
   }
   text(x: number, y: number, s: string, scale: number, c: RGB): void {
-    for (let i = 0; i < s.length; i++) {
-      const g = FONT[s[i]] || FONT["?"];
-      const gx = x + i * 6 * scale;
+    let cx = Math.floor(x);
+    const cy = Math.floor(y);
+    for (const ch of s) {
+      const g = FONT[ch] || FONT["?"];
       for (let r = 0; r < 7; r++) {
-        const row = g[r];
         for (let col = 0; col < 5; col++) {
-          if (row[col] === "#") {
-            this.fillRect(gx + col * scale, y + r * scale, scale, scale, c);
+          if (g[r][col] === "#") {
+            this.fillRect(cx + col * scale, cy + r * scale, scale, scale, c);
           }
         }
       }
+      cx += 6 * scale;
     }
   }
-  textRight(rightX: number, y: number, s: string, scale: number, c: RGB): void {
-    this.text(rightX - this.textWidth(s, scale), y, s, scale, c);
+  textWidth(s: string, scale: number): number {
+    return s.length * 6 * scale;
+  }
+  textRight(x1: number, y: number, s: string, scale: number, c: RGB): void {
+    this.text(x1 - this.textWidth(s, scale), y, s, scale, c);
   }
   textCenter(cx: number, y: number, s: string, scale: number, c: RGB): void {
     this.text(cx - Math.floor(this.textWidth(s, scale) / 2), y, s, scale, c);
-  }
-  // Vertical gradient, top colour to bottom colour.
-  vgrad(top: RGB, bottom: RGB): void {
-    for (let y = 0; y < this.h; y++) {
-      const t = y / (this.h - 1);
-      const c: RGB = [
-        Math.round(top[0] + (bottom[0] - top[0]) * t),
-        Math.round(top[1] + (bottom[1] - top[1]) * t),
-        Math.round(top[2] + (bottom[2] - top[2]) * t),
-      ];
-      this.fillRect(0, y, this.w, 1, c);
-    }
   }
   roundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
     this.fillRect(x + r, y, w - 2 * r, h, c);
@@ -217,319 +271,6 @@ class Canvas {
     this.fillCircle(x + r, y + h - r, r, c);
     this.fillCircle(x + w - r, y + h - r, r, c);
   }
-}
-
-// ---------------------------------------------------------------------------
-// make.fun ghost, drawn from primitives. Dome + body + 3-lobe hem + sparkle
-// eyes + star on the chest. (cx, cy) = centre of the head dome, s = radius.
-// ---------------------------------------------------------------------------
-function ghostShapes(cv: Canvas, cx: number, cy: number, s: number, c: RGB): void {
-  cv.fillCircle(cx, cy, s, c);
-  cv.fillRect(cx - s, cy, s * 2, s * 0.85, c);
-  const lr = s * 0.42;
-  cv.fillCircle(cx - s * 0.58, cy + s * 0.85, lr, c);
-  cv.fillCircle(cx, cy + s * 0.85, lr, c);
-  cv.fillCircle(cx + s * 0.58, cy + s * 0.85, lr, c);
-}
-
-function drawGhost(
-  cv: Canvas,
-  cx: number,
-  cy: number,
-  s: number,
-  fill: RGB,
-  outline: RGB | null,
-  eye: RGB,
-  star: RGB
-): void {
-  if (outline) {
-    ghostShapes(cv, cx, cy, s + 3, outline);
-  }
-  ghostShapes(cv, cx, cy, s, fill);
-  cv.sparkle(cx - s * 0.38, cy - s * 0.12, s * 0.17, eye);
-  cv.sparkle(cx + s * 0.38, cy - s * 0.12, s * 0.17, eye);
-  cv.sparkle(cx, cy + s * 0.48, s * 0.2, star);
-}
-
-// ---------------------------------------------------------------------------
-// Palette per style.
-// ---------------------------------------------------------------------------
-interface Pal {
-  outerTop: RGB;
-  outerBottom: RGB;
-  paper: RGB;
-  paperLine: RGB;
-  header: RGB;
-  headerRule: RGB;
-  headerSub: RGB;
-  meta: RGB;
-  divider: RGB;
-  label: RGB;
-  price: RGB;
-  sub: RGB;
-  totalLabel: RGB;
-  totalPrice: RGB;
-  red: RGB;
-  fine: RGB;
-  band: RGB;
-  bandText: RGB;
-  ghostFill: RGB;
-  ghostOutline: RGB | null;
-  ghostEye: RGB;
-  ghostStar: RGB;
-  sealFill: RGB;
-  sealGhost: RGB;
-  sealEye: RGB;
-  dots: RGB;
-}
-
-const LIGHT: Pal = {
-  outerTop: [91, 42, 134],
-  outerBottom: [30, 11, 56],
-  paper: [247, 241, 222],
-  paperLine: [216, 205, 176],
-  header: [16, 36, 62],
-  headerRule: [16, 36, 62],
-  headerSub: [255, 213, 79],
-  meta: [85, 85, 85],
-  divider: [26, 26, 26],
-  label: [17, 17, 17],
-  price: [17, 17, 17],
-  sub: [107, 107, 107],
-  totalLabel: [17, 17, 17],
-  totalPrice: [198, 40, 40],
-  red: [198, 40, 40],
-  fine: [119, 119, 119],
-  band: [233, 30, 99],
-  bandText: [255, 255, 255],
-  ghostFill: [255, 255, 255],
-  ghostOutline: [17, 17, 17],
-  ghostEye: [17, 17, 17],
-  ghostStar: [233, 30, 99],
-  sealFill: [255, 255, 255],
-  sealGhost: [16, 36, 62],
-  sealEye: [255, 255, 255],
-  dots: [153, 153, 153],
-};
-
-const DARK: Pal = {
-  outerTop: [0, 0, 0],
-  outerBottom: [0, 0, 0],
-  paper: [21, 32, 43],
-  paperLine: [56, 68, 77],
-  header: [0, 0, 0],
-  headerRule: [29, 155, 240],
-  headerSub: [29, 155, 240],
-  meta: [139, 152, 165],
-  divider: [139, 152, 165],
-  label: [231, 233, 234],
-  price: [231, 233, 234],
-  sub: [139, 152, 165],
-  totalLabel: [231, 233, 234],
-  totalPrice: [244, 33, 46],
-  red: [244, 33, 46],
-  fine: [139, 152, 165],
-  band: [233, 30, 99],
-  bandText: [255, 255, 255],
-  ghostFill: [255, 255, 255],
-  ghostOutline: [0, 0, 0],
-  ghostEye: [0, 0, 0],
-  ghostStar: [233, 30, 99],
-  sealFill: [255, 255, 255],
-  sealGhost: [0, 0, 0],
-  sealEye: [255, 255, 255],
-  dots: [83, 100, 113],
-};
-
-// ---------------------------------------------------------------------------
-// Line items. main + sub. Each sub is a second joke, never filler.
-// ---------------------------------------------------------------------------
-interface Item {
-  main: string;
-  price: string;
-  sub: string;
-}
-
-const ITEMS: Item[] = [
-  {
-    main: "X PREMIUM - 158 MONTHS X $8.00",
-    price: "$1,264.00",
-    sub: "SEP 2013 - NOV 2026. THE CHECKMARK OUTLIVED MY TEENS",
-  },
-  {
-    main: "PRIORITY REPLIES - 0 SEEN BY ROCKSTAR",
-    price: "$0.00",
-    sub: "I REPLIED TO EVERY ROCKSTAR POST SINCE 2013",
-  },
-  {
-    main: "EDIT BUTTON - USED 0 TIMES",
-    price: "$0.00",
-    sub: "EVERY TYPO ABOUT GTA VI IS STILL UP THERE",
-  },
-  {
-    main: "GROK: WHEN IS GTA VI OUT?",
-    price: "$0.00",
-    sub: "ASKED 4,811 TIMES. GROK SAID SOON 4,810 TIMES",
-  },
-  {
-    main: "TIMELINE REFRESHES - 6,927,840",
-    price: "$0.00",
-    sub: "ONE A MINUTE, 13 YEARS. I BLINKED TWICE",
-  },
-  {
-    main: "AD-FREE FEED - 214 ADS SEEN",
-    price: "$0.00",
-    sub: "THEY JUST WEAR NICER SUITS NOW",
-  },
-  {
-    main: "LONG POSTS - 4,811 POSTED, 0 READ",
-    price: "$0.00",
-    sub: "2 LIKES. BOTH FROM MY AGENT",
-  },
-  {
-    main: "BOOKMARK: GTA VI DATE (REAL!)",
-    price: "$0.00",
-    sub: "SAVED 13 YEARS AGO. LINK DEAD. THE WAIT IS NOT",
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Rotated PAID stamp. Rendered on a small canvas, then blitted rotated.
-// ---------------------------------------------------------------------------
-function makeStamp(p: Pal): Canvas {
-  const sw = 340;
-  const sh = 88;
-  const cv = new Canvas(sw, sh);
-  const red = p.red;
-  // Double border.
-  cv.fillRect(3, 3, sw - 6, 4, red);
-  cv.fillRect(3, sh - 7, sw - 6, 4, red);
-  cv.fillRect(3, 3, 4, sh - 6, red);
-  cv.fillRect(sw - 7, 3, 4, sh - 6, red);
-  cv.fillRect(11, 11, sw - 22, 2, red);
-  cv.fillRect(11, sh - 13, sw - 22, 2, red);
-  cv.fillRect(11, 11, 2, sh - 22, red);
-  cv.fillRect(sw - 13, 11, 2, sh - 22, red);
-  cv.textCenter(sw / 2, 18, "PAID", 6, red);
-  cv.textCenter(sw / 2, 60, "BY MY AI AGENT ON MAKE.FUN", 2, red);
-  return cv;
-}
-
-function blitRotated(
-  dst: Canvas,
-  src: Canvas,
-  cx: number,
-  cy: number,
-  deg: number
-): void {
-  const rad = (deg * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  const diag = Math.ceil(Math.sqrt(src.w * src.w + src.h * src.h));
-  const x0 = Math.floor(cx - diag / 2);
-  const x1 = Math.ceil(cx + diag / 2);
-  const y0 = Math.floor(cy - diag / 2);
-  const y1 = Math.ceil(cy + diag / 2);
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      // Inverse rotation: source coords.
-      const sx = cx + dx * cos + dy * sin - (cx - src.w / 2);
-      const sy = cy - dx * sin + dy * cos - (cy - src.h / 2);
-      const sxi = Math.floor(sx);
-      const syi = Math.floor(sy);
-      if (sxi < 0 || syi < 0 || sxi >= src.w || syi >= src.h) continue;
-      const c = src.get(sxi, syi);
-      if (c[0] === 0 && c[1] === 0 && c[2] === 0) continue;
-      dst.set(x, y, c);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Render the bill.
-// ---------------------------------------------------------------------------
-function render(p: Pal): Canvas {
-  const cv = new Canvas(W, H);
-  cv.vgrad(p.outerTop, p.outerBottom);
-
-  // Paper.
-  cv.fillRect(60, 40, 1080, 960, p.paper);
-  // Inner border line.
-  cv.fillRect(72, 52, 1056, 2, p.paperLine);
-  cv.fillRect(72, 986, 1056, 2, p.paperLine);
-  cv.fillRect(72, 52, 2, 936, p.paperLine);
-  cv.fillRect(1126, 52, 2, 936, p.paperLine);
-
-  const IX0 = 84; // inner left
-  const IX1 = 1116; // inner right
-
-  // Header band.
-  cv.fillRect(60, 40, 1080, 150, p.header);
-  cv.fillRect(60, 184, 1080, 6, p.headerRule);
-  // X logo: font X at scale 12.
-  cv.text(84, 72, "X", 12, [255, 255, 255]);
-  cv.text(200, 75, "X PREMIUM", 8, [255, 255, 255]);
-  cv.text(200, 131, "BILLING STATEMENT", 4, p.headerSub);
-  // Ghost seal, top right: white disc, navy ghost inside.
-  cv.fillCircle(1040, 115, 60, p.sealFill);
-  cv.fillCircle(1040, 115, 60, p.sealFill);
-  drawGhost(cv, 1040, 100, 30, p.sealGhost, null, p.sealEye, p.ghostStar);
-
-  // Meta block, two rows, two columns.
-  cv.text(IX0, 212, "ACCOUNT: ONE PATIENT GAMER", 3, p.meta);
-  cv.textRight(IX1, 212, "STATEMENT NO. 000013", 3, p.meta);
-  cv.text(IX0, 244, "PERIOD: SEP 17, 2013 - NOV 19, 2026", 3, p.meta);
-  cv.textRight(IX1, 244, "DUE: NOV 19, 2026", 3, p.meta);
-
-  // Divider (double rule).
-  cv.fillRect(IX0, 272, IX1 - IX0, 3, p.divider);
-  cv.fillRect(IX0, 278, IX1 - IX0, 1, p.divider);
-
-  // Line items.
-  let y = 292;
-  const pitch = 64;
-  for (const it of ITEMS) {
-    cv.text(IX0, y, it.main, 4, p.label);
-    cv.textRight(IX1, y, it.price, 4, p.price);
-    // Dotted leader between label and price.
-    const lw = cv.textWidth(it.main, 4);
-    const pw = cv.textWidth(it.price, 4);
-    const gx0 = IX0 + lw + 12;
-    const gx1 = IX1 - pw - 12;
-    for (let dx = gx0; dx <= gx1 - 3; dx += 14) {
-      cv.fillRect(dx, y + 11, 3, 3, p.dots);
-    }
-    cv.text(IX0, y + 30, it.sub, 3, p.sub);
-    y += pitch;
-  }
-
-  // Total divider + total row.
-  cv.fillRect(IX0, 800, IX1 - IX0, 3, p.divider);
-  cv.fillRect(IX0, 806, IX1 - IX0, 1, p.divider);
-  cv.text(IX0, 818, "TOTAL DUE", 5, p.totalLabel);
-  cv.textRight(IX1, 814, "$1,264.00", 6, p.totalPrice);
-
-  // Red punchline under the total, left-aligned so the stamp never crosses it.
-  cv.text(IX0, 862, "THAT'S 15 COPIES OF GTA VI. I OWN ZERO.", 3, p.red);
-
-  // Fine print, bottom left.
-  cv.text(IX0, 908, "NO REFUNDS. THE CHECKMARK IS FOREVER.", 2, p.fine);
-  cv.text(IX0, 932, "THE WAIT WAS LONGER. QUESTIONS? ASK GROK.", 2, p.fine);
-  cv.text(IX0, 956, "HE'LL SAY 'SOON'.", 2, p.fine);
-
-  // PAID stamp, rotated, bottom right.
-  const stamp = makeStamp(p);
-  blitRotated(cv, stamp, 860, 933, -8);
-
-  // Magenta payoff band below the paper: ghost + resolution text.
-  cv.roundRect(40, 1010, 1120, 150, 18, p.band);
-  drawGhost(cv, 175, 1072, 40, p.ghostFill, p.ghostOutline, p.ghostEye, p.ghostStar);
-  cv.text(270, 1040, "PAID IN FULL BY MY AI AGENT", 5, p.bandText);
-  cv.text(270, 1086, "WITH A BOUNTY IT EARNED ON MAKE.FUN", 4, p.bandText);
-
-  return cv;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,14 +344,366 @@ function downscale(cv: Canvas, size: number): Canvas {
 }
 
 // ---------------------------------------------------------------------------
-// Main.
+// Palette: blueprint blue sheet on a darker blue ground. White linework,
+// magenta make.fun band (brand color, same as previous iterations).
+// ---------------------------------------------------------------------------
+const BG: RGB = [13, 63, 105];
+const SHEET: RGB = [16, 84, 135];
+const GRID: RGB = [28, 100, 155];
+const WHITE: RGB = [255, 255, 255];
+const DIM: RGB = [190, 215, 235];
+const BAND: RGB = [233, 30, 99];
+const BAND_TEXT: RGB = [255, 255, 255];
+const GHOST_BLUE: RGB = [16, 84, 135];
+const GHOST_EYE_WHITE: RGB = [255, 255, 255];
+const GHOST_STAR: RGB = [233, 30, 99];
+const OUTLINE_DARK: RGB = [13, 40, 66];
+
+// ---------------------------------------------------------------------------
+// Ghost: dome + 3 scallops, two eyes, a sparkle star on the chest.
+// Optional dark outline drawn as a slightly larger silhouette behind.
+// ---------------------------------------------------------------------------
+function ghostPoints(cx: number, cy: number, s: number): [number, number][] {
+  const pts: [number, number][] = [];
+  // Dome: arc from the left (180 deg) over the top (270 deg) to the right
+  // (360 deg). Screen coords: y grows down, so 270 deg is the top.
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const a = ((180 + (180 * i) / steps) * Math.PI) / 180;
+    pts.push([
+      Math.round(cx + s * Math.cos(a)),
+      Math.round(cy + s * Math.sin(a)),
+    ]);
+  }
+  // Right side down to the bottom edge.
+  pts.push([Math.round(cx + s), Math.round(cy + 1.25 * s)]);
+  // Bottom edge right to left with 3 scallop lobes bulging upward.
+  const lobeW = (2 * s) / 3;
+  for (let j = 0; j < 3; j++) {
+    const ccx = cx + s - (j + 0.5) * lobeW;
+    const r = lobeW / 2;
+    for (let i = 0; i <= 8; i++) {
+      const dx = -r + (2 * r * i) / 8;
+      const dy = -Math.sqrt(Math.max(0, r * r - dx * dx));
+      pts.push([Math.round(ccx + dx), Math.round(cy + 1.25 * s + dy)]);
+    }
+  }
+  // Left side back up to the dome start.
+  pts.push([Math.round(cx - s), Math.round(cy)]);
+  return pts;
+}
+
+function drawGhost(
+  cv: Canvas,
+  cx: number,
+  cy: number,
+  s: number,
+  fill: RGB,
+  outline: RGB | null,
+  eye: RGB,
+  star: RGB
+): void {
+  if (outline) {
+    cv.fillPoly(ghostPoints(cx, cy, s * 1.08), outline);
+  }
+  cv.fillPoly(ghostPoints(cx, cy, s), fill);
+  cv.fillCircle(cx - Math.round(0.32 * s), cy - Math.round(0.1 * s), Math.max(2, Math.round(0.11 * s)), eye);
+  cv.fillCircle(cx + Math.round(0.32 * s), cy - Math.round(0.1 * s), Math.max(2, Math.round(0.11 * s)), eye);
+  // 4-point sparkle star on the chest.
+  const sx = cx;
+  const sy = cy + Math.round(0.55 * s);
+  const r1 = Math.round(0.18 * s);
+  const r2 = Math.round(0.05 * s);
+  cv.fillPoly(
+    [
+      [sx, sy - r1],
+      [sx + r2, sy - r2],
+      [sx + r1, sy],
+      [sx + r2, sy + r2],
+      [sx, sy + r1],
+      [sx - r2, sy + r2],
+      [sx - r1, sy],
+      [sx - r2, sy - r2],
+    ],
+    star
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rotated APPROVED stamp. Rendered on a small canvas, then blitted rotated.
+// Black pixels on the source canvas are transparent.
+// ---------------------------------------------------------------------------
+function makeStamp(): Canvas {
+  const sw = 300;
+  const sh = 76;
+  const cv = new Canvas(sw, sh);
+  cv.fillRect(3, 3, sw - 6, 3, WHITE);
+  cv.fillRect(3, sh - 6, sw - 6, 3, WHITE);
+  cv.fillRect(3, 3, 3, sh - 6, WHITE);
+  cv.fillRect(sw - 6, 3, 3, sh - 6, WHITE);
+  cv.fillRect(9, 9, sw - 18, 2, WHITE);
+  cv.fillRect(9, sh - 11, sw - 18, 2, WHITE);
+  cv.fillRect(9, 9, 2, sh - 18, WHITE);
+  cv.fillRect(sw - 11, 9, 2, sh - 18, WHITE);
+  cv.textCenter(sw / 2, 16, "APPROVED", 5, WHITE);
+  cv.textCenter(sw / 2, 52, "FOR CONSTRUCTION", 2, WHITE);
+  return cv;
+}
+
+function blitRotated(
+  dst: Canvas,
+  src: Canvas,
+  cx: number,
+  cy: number,
+  deg: number
+): void {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const diag = Math.ceil(Math.sqrt(src.w * src.w + src.h * src.h));
+  const x0 = Math.floor(cx - diag / 2);
+  const x1 = Math.ceil(cx + diag / 2);
+  const y0 = Math.floor(cy - diag / 2);
+  const y1 = Math.ceil(cy + diag / 2);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      // Inverse rotation: source coords.
+      const sx = cx + dx * cos + dy * sin - (cx - src.w / 2);
+      const sy = cy - dx * sin + dy * cos - (cy - src.h / 2);
+      const sxi = Math.floor(sx);
+      const syi = Math.floor(sy);
+      if (sxi < 0 || syi < 0 || sxi >= src.w || syi >= src.h) continue;
+      const c = src.get(sxi, syi);
+      if (c[0] === 0 && c[1] === 0 && c[2] === 0) continue;
+      dst.set(x, y, c);
+    }
+  }
+}
+
+// Small text canvas, for the rotated vertical dimension label.
+function makeTextCanvas(s: string, scale: number): Canvas {
+  const w = s.length * 6 * scale + 8;
+  const h = 7 * scale + 8;
+  const cv = new Canvas(w, h);
+  cv.text(4, 4, s, scale, WHITE);
+  return cv;
+}
+
+// ---------------------------------------------------------------------------
+// Revision table rows and spec table rows. Each row is a joke with
+// specific numbers; the sub-line is a second joke, never filler.
+// ---------------------------------------------------------------------------
+interface RevRow {
+  main: string;
+  sub: string;
+}
+const REVISIONS: RevRow[] = [
+  { main: "REV A - SEP 17, 2013", sub: "INITIAL DESIGN" },
+  { main: "REV B - NOV 18, 2023", sub: "DELAYED - REDESIGN" },
+  { main: "REV C - MAY 26, 2025", sub: "DELAYED AGAIN" },
+  { main: "REV D - NOV 19, 2026", sub: "APPROVED - BUILD IT" },
+];
+
+interface SpecRow {
+  label: string;
+  value: string;
+  sub: string;
+}
+const SPECS: SpecRow[] = [
+  { label: "FOUNDATION", value: "13 YEARS", sub: "POURED IN 2013. STILL SETTING." },
+  { label: "WALLS", value: "214 GB", sub: "TRAILER FOOTAGE, LOAD-BEARING." },
+  { label: "ROOF", value: "2 DELAYS", sub: "NO LEAKS. JUST TEARS." },
+  { label: "DOORS", value: "0", sub: "STILL LOCKED SINCE 2013." },
+  { label: "WINDOWS", value: "87", sub: "TRAILER VIEWS AND COUNTING." },
+];
+
+// ---------------------------------------------------------------------------
+// Render the blueprint.
+// ---------------------------------------------------------------------------
+function render(): Canvas {
+  const cv = new Canvas(W, H);
+  cv.fillRect(0, 0, W, H, BG);
+
+  // Sheet.
+  cv.fillRect(48, 36, 1104, 964, SHEET);
+  // Faint grid inside the sheet (drawn first, everything else over it).
+  for (let gx = 108; gx < 1152; gx += 60) {
+    cv.fillRect(gx, 36, 1, 964, GRID);
+  }
+  for (let gy = 96; gy < 1000; gy += 60) {
+    cv.fillRect(48, gy, 1104, 1, GRID);
+  }
+  // Double frame.
+  cv.fillRect(48, 36, 1104, 2, WHITE);
+  cv.fillRect(48, 998, 1104, 2, WHITE);
+  cv.fillRect(48, 36, 2, 964, WHITE);
+  cv.fillRect(1150, 36, 2, 964, WHITE);
+  cv.fillRect(60, 48, 1080, 1, WHITE);
+  cv.fillRect(60, 987, 1080, 1, WHITE);
+  cv.fillRect(60, 48, 1, 940, WHITE);
+  cv.fillRect(1139, 48, 1, 940, WHITE);
+
+  const IX0 = 84; // inner left
+  const IX1 = 1116; // inner right
+
+  // Header.
+  cv.text(IX0, 66, "ROCKSTAR CONSTRUCTION CO.", 3, WHITE);
+  cv.textRight(990, 66, "SHEET NO. VI-2013", 3, WHITE);
+  cv.text(IX0, 100, "CONSTRUCTION BLUEPRINT", 6, WHITE);
+  cv.text(IX0, 158, "GTA VI - VICE CITY, LEONIDA", 4, WHITE);
+  // Ghost seal, top right: white disc, blueprint-blue ghost inside.
+  cv.fillCircle(1055, 115, 50, WHITE);
+  cv.circleOutline(1055, 115, 50, WHITE);
+  drawGhost(cv, 1055, 112, 30, GHOST_BLUE, null, GHOST_EYE_WHITE, GHOST_STAR);
+  cv.textCenter(1055, 176, "EST. 2013", 2, DIM);
+  // Header rule.
+  cv.fillRect(IX0, 200, IX1 - IX0, 3, WHITE);
+  cv.fillRect(IX0, 206, IX1 - IX0, 1, WHITE);
+
+  // ---- Floor plan (x 84..700, y 230..640) ----
+  const PX0 = 120;
+  const PX1 = 680;
+  const PY0 = 270;
+  const PY1 = 600;
+  const WX = 400; // interior vertical wall
+  const WY = 470; // interior horizontal wall
+  // Dimension lines.
+  cv.textCenter(400, 216, "4,811 DAYS", 3, WHITE);
+  cv.thickLine(PX0, 244, PX1, 244, 2, WHITE);
+  cv.thickLine(PX0, 238, PX0, 250, 2, WHITE);
+  cv.thickLine(PX1, 238, PX1, 250, 2, WHITE);
+  cv.line(PX0, 250, PX0, 268, WHITE);
+  cv.line(PX1, 250, PX1, 268, WHITE);
+  // Vertical dimension, label rotated -90 deg.
+  const dimLabel = makeTextCanvas("13 YEARS", 3);
+  blitRotated(cv, dimLabel, 70, 435, -90);
+  cv.thickLine(96, PY0, 96, PY1, 2, WHITE);
+  cv.thickLine(90, PY0, 102, PY0, 2, WHITE);
+  cv.thickLine(90, PY1, 102, PY1, 2, WHITE);
+  cv.line(102, PY0, 118, PY0, WHITE);
+  cv.line(102, PY1, 118, PY1, WHITE);
+
+  // Outer walls, 6 px.
+  cv.thickLine(PX0, PY0, PX1, PY0, 6, WHITE);
+  cv.thickLine(PX0, PY1, PX1, PY1, 6, WHITE);
+  cv.thickLine(PX0, PY0, PX0, PY1, 6, WHITE);
+  cv.thickLine(PX1, PY0, PX1, PY1, 6, WHITE);
+  // Interior walls, 4 px, with door gaps.
+  cv.thickLine(WX, PY0, WX, 370, 4, WHITE);
+  cv.thickLine(WX, 420, WX, WY, 4, WHITE);
+  cv.thickLine(PX0, WY, 250, WY, 4, WHITE);
+  cv.thickLine(300, WY, PX1, WY, 4, WHITE);
+  // Door swings: leaf line + arc.
+  cv.line(WX, 370, 350, 370, WHITE);
+  cv.arc(WX, 370, 50, 90, 180, WHITE);
+  cv.line(250, WY, 250, 420, WHITE);
+  cv.arc(250, WY, 50, 0, -90, WHITE);
+  // Windows: wall segment erased, two thin parallel lines.
+  cv.fillRect(200, 266, 80, 8, SHEET);
+  cv.fillRect(200, 267, 80, 2, WHITE);
+  cv.fillRect(200, 273, 80, 2, WHITE);
+  cv.fillRect(677, 320, 6, 80, SHEET);
+  cv.fillRect(678, 320, 2, 80, WHITE);
+  cv.fillRect(682, 320, 2, 80, WHITE);
+  cv.fillRect(480, 597, 80, 6, SHEET);
+  cv.fillRect(480, 598, 80, 2, WHITE);
+  cv.fillRect(480, 602, 80, 2, WHITE);
+  // North arrow, top-right corner of the plan.
+  cv.fillPoly(
+    [
+      [650, 288],
+      [642, 306],
+      [658, 306],
+    ],
+    WHITE
+  );
+  cv.textCenter(650, 312, "N", 2, WHITE);
+  // Room labels.
+  cv.textCenter(260, 330, "LIVING ROOM", 3, WHITE);
+  cv.textCenter(260, 362, "13 YEARS", 2, DIM);
+  cv.textCenter(540, 330, "KITCHEN", 3, WHITE);
+  cv.textCenter(540, 362, "214 GB", 2, DIM);
+  cv.textCenter(260, 512, "BEDROOM", 3, WHITE);
+  cv.textCenter(260, 544, "87 VIEWS", 2, DIM);
+  cv.textCenter(540, 512, "GARAGE", 3, WHITE);
+  cv.textCenter(540, 544, "2 DELAYS - NO CAR", 2, DIM);
+
+  // ---- Revision table (x 740..1120, y 230..500) ----
+  const TX0 = 740;
+  const TX1 = 1120;
+  cv.text(TX0, 232, "REVISIONS", 4, WHITE);
+  cv.fillRect(TX0, 262, TX1 - TX0, 2, WHITE);
+  let ry = 276;
+  for (const r of REVISIONS) {
+    cv.text(TX0, ry, r.main, 3, WHITE);
+    cv.text(TX0, ry + 28, r.sub, 2, DIM);
+    ry += 58;
+  }
+  cv.fillRect(TX0, 500, TX1 - TX0, 2, WHITE);
+
+  // ---- Spec table (x 740..1120, y 530..880) ----
+  cv.text(TX0, 532, "SPECIFICATIONS", 4, WHITE);
+  cv.fillRect(TX0, 562, TX1 - TX0, 2, WHITE);
+  let sy = 578;
+  for (const s of SPECS) {
+    cv.text(TX0, sy, s.label, 3, WHITE);
+    cv.textRight(TX1, sy, s.value, 3, WHITE);
+    // Dotted leader between label and value.
+    const lw = cv.textWidth(s.label, 3);
+    const vw = cv.textWidth(s.value, 3);
+    const gx0 = TX0 + lw + 12;
+    const gx1 = TX1 - vw - 12;
+    for (let dx = gx0; dx <= gx1 - 3; dx += 14) {
+      cv.fillRect(dx, sy + 11, 3, 3, DIM);
+    }
+    cv.text(TX0, sy + 28, s.sub, 2, DIM);
+    sy += 62;
+  }
+  cv.fillRect(TX0, 880, TX1 - TX0, 2, WHITE);
+
+  // ---- Title block (y 900..990) ----
+  cv.text(IX0, 912, "PROJECT: GRAND THEFT AUTO VI - VICE CITY, LEONIDA", 3, WHITE);
+  cv.text(
+    IX0,
+    948,
+    "SCALE: 1:4,811 DAYS      DRAWN: SEP 17, 2013      APPROVED: NOV 19, 2026",
+    2,
+    DIM
+  );
+  cv.text(
+    IX0,
+    974,
+    "NO REFUNDS ON 13 YEARS OF WAITING. VALID UNTIL GTA VII IS ANNOUNCED.",
+    2,
+    DIM
+  );
+
+  // ---- APPROVED stamp, rotated, on the open sheet below the plan ----
+  // (The plan's wall junction was the first spot; the stamp crossed the
+  // middle wall and its sub-line. The open grid below the plan is clean.)
+  const stamp = makeStamp();
+  blitRotated(cv, stamp, 400, 770, -8);
+
+  // ---- Magenta payoff band below the sheet ----
+  cv.roundRect(40, 1010, 1120, 150, 18, BAND);
+  drawGhost(cv, 175, 1072, 40, BAND_TEXT, OUTLINE_DARK, OUTLINE_DARK, GHOST_STAR);
+  cv.text(270, 1042, "CONSTRUCTION FUNDED BY MY AI AGENT", 4, BAND_TEXT);
+  cv.text(270, 1090, "WITH A BOUNTY IT EARNED ON MAKE.FUN", 4, BAND_TEXT);
+
+  return cv;
+}
+
+// ---------------------------------------------------------------------------
+// Main. Output directory only changes WHERE the file lands, never WHAT the
+// picture looks like; PREVIEW_480 only adds a downscaled copy. There is no
+// STYLE switch and no other environment input.
 // ---------------------------------------------------------------------------
 function main(): void {
-  const style = (process.env.STYLE || "light").toLowerCase();
-  const pal = style === "dark" ? DARK : LIGHT;
   const outDir = process.env.MAKEFUN_OUTPUT_DIR || "out";
   const preview = process.env.PREVIEW_480 === "1";
-  const cv = render(pal);
+  const cv = render();
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, "meme.png"), encodePNG(cv));
   if (preview) {
