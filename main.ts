@@ -1,81 +1,73 @@
-// gta6-meme-x-01 — REVISI KE-4: "GTA VI SIM" starter pack.
-// Deterministic renderer, Node stdlib only. No network, no wall clock,
-// no randomness beyond fixed constants. Run:
-//   mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
-// Writes out/meme.png (1200x1200) and copies POST.json to out/POST.json.
-// With PREVIEW_480=1 also writes out/meme-480.png (the size the judge sees).
-//
-// Concept: a fake real-world document, like the top-10 winners — a SIM
-// starter pack (kartu perdana) from LEONIDA MOBILE. The plan table is the
-// joke engine: 7 rows, each one a joke, specific numbers everywhere.
-// The ghost is the operator logo (header), the chip etching, and the
-// payoff-band badge — functional inside the document, never a sticker.
-
+// Rockstar HR letter: "Resident of Vice City — Application Approved After 4,811 Days"
+// Deterministic renderer, Node stdlib only (Buffer + zlib + CRC32, no network,
+// no wall clock, no randomness). Writes out/meme.png (1200x1200) + out/meme-480.png.
+// Concept: a formal HR application letter from Rockstar Games, Leonida Division.
+// The document itself is the joke: 10 itemized rows, every row one joke with
+// specific numbers. The make.fun ghost is the HR seal (letterhead), the emblem
+// inside the APPROVED stamp, and the badge on the signing-bonus band — never a
+// pasted sticker. The make.fun payoff is the document's own resolution
+// (signing bonus paid by my AI agent on make.fun), not a slogan.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
+import * as crypto from "node:crypto";
 
 const W = 1200;
 const H = 1200;
-const outDir = process.env.MAKEFUN_OUTPUT_DIR || "out";
-const botDir = process.env.MAKEFUN_BOT_DIR || ".";
-const preview480 = process.env.PREVIEW_480 === "1";
+const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR || "out";
+const BOT_DIR = process.env.MAKEFUN_BOT_DIR || ".";
 
-// ---------------------------------------------------------------------------
-// Framebuffer
-// ---------------------------------------------------------------------------
+// ---------- palette ----------
+const PAPER = [247, 242, 228]; // cream letter paper
+const INK = [26, 26, 26]; // near-black ink
+const NAVY = [22, 35, 63]; // Rockstar HR navy
+const RED = [192, 57, 43]; // APPROVED stamp red
+const MAGENTA = [214, 51, 108]; // make.fun accent
+const WHITE = [255, 255, 255];
+const RULE = [221, 213, 189]; // light row separator
+const DOTS = [201, 192, 168]; // dotted leader
 
-const fb = Buffer.alloc(W * H * 3);
-
-type RGB = [number, number, number];
-
-function setPixel(x: number, y: number, c: RGB): void {
-  if (x < 0 || x >= W || y < 0 || y >= H) return;
-  const i = (y * W + x) * 3;
-  fb[i] = c[0];
-  fb[i + 1] = c[1];
-  fb[i + 2] = c[2];
+// ---------- pixel buffer ----------
+const img = Buffer.alloc(W * H * 3);
+for (let i = 0; i < W * H; i++) {
+  img[i * 3] = PAPER[0];
+  img[i * 3 + 1] = PAPER[1];
+  img[i * 3 + 2] = PAPER[2];
 }
-
-function getPixel(x: number, y: number): RGB {
-  const i = (y * W + x) * 3;
-  return [fb[i], fb[i + 1], fb[i + 2]];
+function setPixel(x, y, c) {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const o = (y * W + x) * 3;
+  img[o] = c[0];
+  img[o + 1] = c[1];
+  img[o + 2] = c[2];
 }
-
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  for (let yy = y; yy < y + h; yy++) {
-    for (let xx = x; xx < x + w; xx++) setPixel(xx, yy, c);
-  }
+function fillRect(x, y, w, h, c) {
+  for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) setPixel(i, j, c);
 }
-
-function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
-  for (let yy = cy - r; yy <= cy + r; yy++) {
-    const dx = Math.floor(Math.sqrt(Math.max(0, r * r - (yy - cy) * (yy - cy))));
-    for (let xx = cx - dx; xx <= cx + dx; xx++) setPixel(xx, yy, c);
-  }
+function hline(x1, x2, y, c) {
+  for (let x = x1; x <= x2; x++) setPixel(x, y, c);
 }
-
-function fillRoundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
-  fillRect(x + r, y, w - 2 * r, h, c);
-  fillRect(x, y + r, w, h - 2 * r, c);
-  fillCircle(x + r, y + r, r, c);
-  fillCircle(x + w - r, y + r, r, c);
-  fillCircle(x + r, y + h - r, r, c);
-  fillCircle(x + w - r, y + h - r, r, c);
+function vline(x, y1, y2, c) {
+  for (let y = y1; y <= y2; y++) setPixel(x, y, c);
 }
-
-// Bresenham line.
-function drawLine(x0: number, y0: number, x1: number, y1: number, c: RGB): void {
-  let dx = Math.abs(x1 - x0);
-  let dy = -Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
+function rectOutline(x, y, w, h, t, c) {
+  fillRect(x, y, w, t, c);
+  fillRect(x, y + h - t, w, t, c);
+  fillRect(x, y, t, h, c);
+  fillRect(x + w - t, y, t, h, c);
+}
+// Bresenham 1px line
+function line(x1, y1, x2, y2, c) {
+  const dx = Math.abs(x2 - x1);
+  const dy = -Math.abs(y2 - y1);
+  const sx = x1 < x2 ? 1 : -1;
+  const sy = y1 < y2 ? 1 : -1;
   let err = dx + dy;
-  let x = x0;
-  let y = y0;
+  let x = x1;
+  let y = y1;
   for (;;) {
     setPixel(x, y, c);
-    if (x === x1 && y === y1) break;
+    if (x === x2 && y === y2) break;
     const e2 = 2 * err;
     if (e2 >= dy) {
       err += dy;
@@ -87,46 +79,50 @@ function drawLine(x0: number, y0: number, x1: number, y1: number, c: RGB): void 
     }
   }
 }
-
-// Thick line: stamp filled circles along the Bresenham path.
-function drawThickLine(x0: number, y0: number, x1: number, y1: number, t: number, c: RGB): void {
-  const r = Math.max(1, Math.floor(t / 2));
-  let dx = Math.abs(x1 - x0);
-  let dy = -Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx + dy;
-  let x = x0;
-  let y = y0;
-  for (;;) {
-    fillCircle(x, y, r, c);
-    if (x === x1 && y === y1) break;
-    const e2 = 2 * err;
-    if (e2 >= dy) {
-      err += dy;
-      x += sx;
+function thickLine(x1, y1, x2, y2, t, c) {
+  const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const px = (-(y2 - y1) / len) | 0;
+  const py = ((x2 - x1) / len) | 0;
+  const half = Math.floor(t / 2);
+  for (let k = -half; k <= half; k++) {
+    line(x1 + px * k, y1 + py * k, x2 + px * k, y2 + py * k, c);
+  }
+}
+function fillCircle(cx, cy, r, c) {
+  for (let y = cy - r; y <= cy + r; y++) {
+    for (let x = cx - r; x <= cx + r; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= r * r) setPixel(x, y, c);
     }
-    if (e2 <= dx) {
-      err += dx;
-      y += sy;
+  }
+}
+// Even-odd scanline polygon fill. pts: [[x,y],...]
+function fillPolygon(pts, c) {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p[1] < minY) minY = p[1];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  for (let y = Math.ceil(minY); y <= Math.floor(maxY); y++) {
+    const xs = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
+        xs.push(a[0] + ((y - a[1]) * (b[0] - a[0])) / (b[1] - a[1]));
+      }
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      for (let x = Math.ceil(xs[k]); x <= Math.floor(xs[k + 1]); x++) setPixel(x, y, c);
     }
   }
 }
 
-// 4-point sparkle (thin diamond).
-function drawDiamond(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
-  for (let yy = cy - ry; yy <= cy + ry; yy++) {
-    const t = 1 - Math.abs(yy - cy) / ry;
-    const dx = Math.max(0, Math.floor(rx * t));
-    for (let xx = cx - dx; xx <= cx + dx; xx++) setPixel(xx, yy, c);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 5x7 bitmap font (homemade). Each glyph: 7 rows of 5 bits.
-// ---------------------------------------------------------------------------
-
-const FONT: Record<string, string[]> = {
+// ---------- 5x7 bitmap font (rows top to bottom, "1" = pixel on) ----------
+const FONT = {
   A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
   B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
   C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
@@ -149,7 +145,7 @@ const FONT: Record<string, string[]> = {
   T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
   U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
   V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
-  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  W: ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
   X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
   Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
   Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
@@ -171,16 +167,25 @@ const FONT: Record<string, string[]> = {
   $: ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
   "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
   ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
+  "'": ["00100", "00100", "01000", "00000", "00000", "00000", "00000"],
+  "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
+  "/": ["00001", "00010", "00010", "00100", "01000", "01000", "10000"],
+  "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
+  "&": ["01100", "10010", "10100", "01000", "10101", "10010", "01101"],
+  "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
+  "=": ["00000", "00000", "11111", "00000", "11111", "00000", "00000"],
+  "?": ["01110", "10001", "00001", "00110", "00100", "00000", "00100"],
+  _: ["00000", "00000", "00000", "00000", "00000", "00000", "11111"],
+  "*": ["00000", "10101", "01110", "11111", "01110", "10101", "00000"],
+  "#": ["01010", "01010", "11111", "01010", "11111", "01010", "01010"],
 };
-
-function textWidth(s: string, scale: number): number {
-  if (s.length === 0) return 0;
+function textWidth(s, scale) {
   return s.length * 6 * scale - scale;
 }
-
-function drawText(s: string, x: number, y: number, scale: number, c: RGB): void {
-  for (let i = 0; i < s.length; i++) {
-    const g = FONT[s[i]] || FONT[" "];
+function drawText(s, x, y, scale, c) {
+  const up = s.toUpperCase();
+  for (let i = 0; i < up.length; i++) {
+    const g = FONT[up[i]] || FONT[" "];
     for (let r = 0; r < 7; r++) {
       for (let col = 0; col < 5; col++) {
         if (g[r][col] === "1") {
@@ -190,97 +195,174 @@ function drawText(s: string, x: number, y: number, scale: number, c: RGB): void 
     }
   }
 }
-
-// Rotated text: the text block is centered on (cx, cy), rotated by angleDeg.
-// Each font pixel is placed by rotating its sub-pixels around the center.
-function drawTextRotated(s: string, cx: number, cy: number, angleDeg: number, scale: number, c: RGB): void {
-  const tw = textWidth(s, scale);
+function drawTextCentered(s, cx, y, scale, c) {
+  drawText(s, Math.round(cx - textWidth(s, scale) / 2), y, scale, c);
+}
+function drawTextRight(s, xRight, y, scale, c) {
+  drawText(s, xRight - textWidth(s, scale), y, scale, c);
+}
+// Rotated text: each glyph pixel rotated around (cx, cy) by angleDeg.
+function drawTextRotated(s, cx, cy, angleDeg, scale, c) {
+  const up = s.toUpperCase();
+  const tw = textWidth(up, scale);
   const th = 7 * scale;
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);
   const sin = Math.sin(a);
-  for (let i = 0; i < s.length; i++) {
-    const g = FONT[s[i]] || FONT[" "];
+  for (let i = 0; i < up.length; i++) {
+    const g = FONT[up[i]] || FONT[" "];
     for (let r = 0; r < 7; r++) {
       for (let col = 0; col < 5; col++) {
         if (g[r][col] !== "1") continue;
-        for (let sy = 0; sy < scale; sy++) {
-          for (let sx = 0; sx < scale; sx++) {
-            const lx = i * 6 * scale + col * scale + sx - tw / 2;
-            const ly = r * scale + sy - th / 2;
-            const rx = lx * cos - ly * sin;
-            const ry = lx * sin + ly * cos;
-            setPixel(Math.round(cx + rx), Math.round(cy + ry), c);
-          }
-        }
+        const lx = i * 6 * scale + col * scale + scale / 2 - tw / 2;
+        const ly = r * scale + scale / 2 - th / 2;
+        const rx = lx * cos - ly * sin;
+        const ry = lx * sin + ly * cos;
+        fillRect(Math.round(cx + rx - scale / 2), Math.round(cy + ry - scale / 2), scale, scale, c);
       }
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// The make.fun ghost, drawn from primitives. (cx, cy) = center, h = height.
-// cutColor must equal whatever the ghost sits on (it carves the wavy bottom).
-// ---------------------------------------------------------------------------
-
-function drawGhost(
-  cx: number,
-  cy: number,
-  h: number,
-  body: RGB,
-  eye: RGB,
-  cutColor: RGB,
-  coin: RGB | null,
-  star: RGB | null,
-): void {
-  const w = Math.round(h * 0.78);
-  const top = cy - Math.floor(h / 2);
-  const bottom = cy + Math.floor(h / 2);
-  const rHead = Math.floor(w / 2);
-  // Head + body.
-  fillCircle(cx, top + rHead, rHead, body);
-  fillRect(cx - rHead, top + Math.floor(rHead * 0.7), w, bottom - (top + Math.floor(rHead * 0.7)), body);
-  // Wavy bottom: three notches carved in the background color.
-  const sr = Math.max(4, Math.floor(w / 6));
-  fillCircle(cx - Math.floor(w / 3), bottom, sr, cutColor);
-  fillCircle(cx, bottom, sr, cutColor);
-  fillCircle(cx + Math.floor(w / 3), bottom, sr, cutColor);
-  // Sparkle eyes.
-  const ey = top + Math.floor(h * 0.3);
-  const ex = Math.floor(w * 0.18);
-  drawDiamond(cx - ex, ey, Math.max(3, Math.floor(w * 0.07)), Math.max(3, Math.floor(h * 0.05)), eye);
-  drawDiamond(cx + ex, ey, Math.max(3, Math.floor(w * 0.07)), Math.max(3, Math.floor(h * 0.05)), eye);
-  // Coin with a star, held at the ghost's side.
-  if (coin && star) {
-    const cr = Math.max(6, Math.floor(w * 0.15));
-    const ccx = cx + Math.floor(w * 0.45);
-    const ccy = cy + Math.floor(h * 0.16);
-    fillCircle(ccx, ccy, cr, coin);
-    drawDiamond(ccx, ccy, Math.max(3, Math.floor(cr * 0.55)), Math.max(3, Math.floor(cr * 0.55)), star);
+// Rotated rectangle outline (border only, transparent fill).
+function rectRotated(cx, cy, w, h, angleDeg, t, c) {
+  const a = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const rot = (dx, dy) => [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+  const p1 = rot(-w / 2, -h / 2);
+  const p2 = rot(w / 2, -h / 2);
+  const p3 = rot(w / 2, h / 2);
+  const p4 = rot(-w / 2, h / 2);
+  const pts = [p1, p2, p3, p4];
+  for (let i = 0; i < 4; i++) {
+    const q1 = pts[i];
+    const q2 = pts[(i + 1) % 4];
+    thickLine(Math.round(q1[0]), Math.round(q1[1]), Math.round(q2[0]), Math.round(q2[1]), t, c);
   }
 }
 
-// ---------------------------------------------------------------------------
-// PNG encoder (stdlib zlib + homemade CRC32)
-// ---------------------------------------------------------------------------
-
-const CRC_TABLE: number[] = (() => {
-  const t: number[] = [];
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t.push(c >>> 0);
+// ---------- make.fun ghost, drawn from primitives ----------
+// cx: center x, top: top y, w/h: body size. bodyColor = ghost fill,
+// eyeColor = eyes, starColor = null or the chest sparkle color.
+function drawGhost(cx, top, w, h, bodyColor, eyeColor, starColor) {
+  const r = w / 2;
+  const bottom = top + h;
+  const sc = h * 0.16; // scallop depth
+  const pts = [];
+  for (let deg = 180; deg >= 0; deg -= 9) {
+    const a = (deg * Math.PI) / 180;
+    pts.push([cx + r * Math.cos(a), top + r - r * Math.sin(a)]);
   }
-  return t;
-})();
+  pts.push([cx + r, bottom - sc]);
+  pts.push([cx + r * 0.66, bottom]);
+  pts.push([cx + r * 0.33, bottom - sc]);
+  pts.push([cx, bottom]);
+  pts.push([cx - r * 0.33, bottom - sc]);
+  pts.push([cx - r * 0.66, bottom]);
+  pts.push([cx - r, bottom - sc]);
+  fillPolygon(pts, bodyColor);
+  const er = Math.max(3, Math.round(r * 0.17));
+  fillCircle(Math.round(cx - r * 0.38), Math.round(top + r * 1.02), er, eyeColor);
+  fillCircle(Math.round(cx + r * 0.38), Math.round(top + r * 1.02), er, eyeColor);
+  if (starColor) {
+    const sx = cx;
+    const sy = Math.round(top + h * 0.66);
+    const s = Math.max(3, Math.round(r * 0.16));
+    fillRect(sx - s, sy - 1, 2 * s + 1, 3, starColor);
+    fillRect(sx - 1, sy - s, 3, 2 * s + 1, starColor);
+  }
+}
 
-function crc32(buf: Buffer): number {
+// ---------- document layout ----------
+// Outer double border
+rectOutline(20, 20, W - 40, H - 40, 3, INK);
+rectOutline(32, 32, W - 64, H - 64, 1, INK);
+
+// Header: navy seal with white ghost + letterhead
+fillCircle(112, 112, 58, NAVY);
+drawGhost(112, 74, 62, 76, WHITE, NAVY, MAGENTA);
+drawText("ROCKSTAR GAMES", 200, 66, 7, NAVY);
+drawText("HUMAN RESOURCES - LEONIDA DIVISION", 200, 130, 4, INK);
+drawTextRight("FORM NO. VI-2013", 1168, 66, 3, INK);
+drawTextRight("REF: 4811-2013", 1168, 96, 3, INK);
+
+// Double rule under header
+for (let y = 198; y <= 199; y++) hline(60, 1140, y, NAVY);
+hline(60, 1140, 204, INK);
+
+// Title + position + cover line
+drawTextCentered("APPLICATION FOR EMPLOYMENT", 600, 228, 5, INK);
+drawTextCentered("POSITION: RESIDENT OF VICE CITY", 600, 288, 4, NAVY);
+drawTextCentered("DEAR HR: I HAVE WAITED 13 YEARS FOR THIS JOB.", 600, 332, 4, INK);
+
+// Applicant row
+drawText("APPLICANT: ONE PATIENT GAMER", 80, 380, 4, INK);
+hline(60, 1140, 408, RULE);
+
+// Itemized processing table: 10 rows, label left, dotted leader, value right
+const ROWS = [
+  ["RECEIVED", "SEP 17, 2013", INK],
+  ["REVIEWED", "4,811 DAYS", INK],
+  ["IN QUEUE", "13 YEARS", INK],
+  ["DELAYS", "2 - NO EXTRA CHARGE", INK],
+  ["AGE", "15 THEN, 28 NOW", INK],
+  ["LAST JOB", "GTA V, 2013-2026", INK],
+  ["SALARY", "$79.99", INK],
+  ["PORTFOLIO", "214 GB", INK],
+  ["START DATE", "NOV 19, 2026", INK],
+  // DECISION has no value text: the stamp IS the decision (and its word).
+  ["DECISION", "", RED],
+];
+const TABLE_Y = 420;
+const ROW_H = 56;
+for (let i = 0; i < ROWS.length; i++) {
+  const top = TABLE_Y + i * ROW_H;
+  if (i > 0) hline(60, 1140, top, RULE);
+  const [label, value, vc] = ROWS[i];
+  drawText(label, 80, top + 14, 4, INK);
+  const labelEnd = 80 + textWidth(label, 4);
+  const valueStart = 1120 - textWidth(value, 4);
+  for (let x = labelEnd + 12; x < valueStart - 10; x += 10) {
+    fillRect(x, top + 27, 3, 3, DOTS);
+  }
+  drawText(value, valueStart, top + 14, 4, vc);
+}
+
+// APPROVED stamp, rotated -6 deg, outline only so the table shows through.
+// Ghost is the stamp's emblem, left of the word. Sized and placed so its top
+// edge stays below the START DATE value and its bottom only kisses the band
+// edge: no table value is covered.
+const STAMP_CX = 900;
+const STAMP_CY = 958;
+rectRotated(STAMP_CX, STAMP_CY, 260, 70, -6, 3, RED);
+rectRotated(STAMP_CX, STAMP_CY, 250, 58, -6, 2, RED);
+drawGhost(STAMP_CX - 92, STAMP_CY - 20, 36, 42, RED, PAPER, null);
+drawTextRotated("APPROVED", STAMP_CX + 36, STAMP_CY - 6, -6, 4, RED);
+drawTextRotated("LEONIDA DIVISION", STAMP_CX + 36, STAMP_CY + 24, -6, 2, RED);
+
+// Signing-bonus band: the document's own resolution (make.fun payoff)
+fillRect(48, 1000, 1104, 110, NAVY);
+drawGhost(122, 1018, 56, 68, WHITE, NAVY, MAGENTA);
+drawTextCentered("SIGNING BONUS $250 PAID BY", 666, 1014, 4, WHITE);
+drawTextCentered("MY AI AGENT ON MAKE.FUN", 666, 1054, 4, WHITE);
+
+// Fine print
+drawTextCentered("OFFER VALID UNTIL GTA VII IS ANNOUNCED.", 600, 1120, 3, INK);
+drawTextCentered("NO REFUNDS ON 13 YEARS OF WAITING.", 600, 1142, 3, INK);
+
+// ---------- PNG encode (deterministic: no timestamps) ----------
+const CRC_TABLE = [];
+for (let n = 0; n < 256; n++) {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  CRC_TABLE[n] = c >>> 0;
+}
+function crc32(buf) {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
-
-function pngChunk(type: string, data: Buffer): Buffer {
+function chunk(type, data) {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
   const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
@@ -288,207 +370,65 @@ function pngChunk(type: string, data: Buffer): Buffer {
   crc.writeUInt32BE(crc32(td), 0);
   return Buffer.concat([len, td, crc]);
 }
-
-function encodePNG(w: number, h: number, pixels: Buffer): Buffer {
+function encodePNG(w, h, rgb) {
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0;
+    rgb.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
+  }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
   ihdr.writeUInt32BE(h, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // color type RGB
+  ihdr[9] = 2; // RGB
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const raw = Buffer.alloc(h * (1 + w * 3));
-  for (let y = 0; y < h; y++) {
-    raw[y * (1 + w * 3)] = 0;
-    pixels.copy(raw, y * (1 + w * 3) + 1, y * w * 3, (y + 1) * w * 3);
-  }
   const idat = zlib.deflateSync(raw, { level: 9 });
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", idat),
-    pngChunk("IEND", Buffer.alloc(0)),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", idat),
+    chunk("IEND", Buffer.alloc(0)),
   ]);
 }
-
-// ---------------------------------------------------------------------------
-// Palette
-// ---------------------------------------------------------------------------
-
-const NAVY: RGB = [14, 26, 56];
-const INK: RGB = [18, 32, 63];
-const MAGENTA: RGB = [230, 0, 126];
-const MAGENTA_DARK: RGB = [122, 0, 69];
-const CARD: RGB = [251, 250, 244];
-const GOLD: RGB = [230, 179, 77];
-const GOLD_LINE: RGB = [192, 138, 45];
-const GOLD_DARK: RGB = [138, 109, 31];
-const RED: RGB = [200, 16, 46];
-const GRAY: RGB = [111, 111, 100];
-const HAIR: RGB = [221, 216, 200];
-const DOT: RGB = [185, 180, 164];
-const FINE: RGB = [138, 138, 128];
-const WHITE: RGB = [255, 255, 255];
-const BLACK: RGB = [20, 20, 20];
-
-// ---------------------------------------------------------------------------
-// Scene
-// ---------------------------------------------------------------------------
-
-// Background: dark plum vertical gradient.
-for (let y = 0; y < H; y++) {
-  const t = y / (H - 1);
-  const c: RGB = [
-    Math.round(42 + (20 - 42) * t),
-    Math.round(22 + (10 - 22) * t),
-    Math.round(80 + (40 - 80) * t),
-  ];
-  fillRect(0, y, W, 1, c);
-}
-
-// Card with a soft offset shadow.
-fillRoundRect(68, 54, 1080, 1104, 36, [13, 6, 24]);
-fillRoundRect(60, 46, 1080, 1104, 36, CARD);
-
-// Header band (navy), top corners rounded, bottom corners square.
-fillRoundRect(60, 46, 1080, 140, 36, NAVY);
-fillRect(60, 120, 1080, 66, NAVY);
-
-// Ghost as the operator logo.
-drawGhost(146, 116, 92, WHITE, NAVY, NAVY, MAGENTA, WHITE);
-drawText("LEONIDA MOBILE", 210, 82, 7, WHITE);
-drawText("VICE CITY - EST. 2013", 210, 142, 3, WHITE);
-
-// Title + plan subhead.
-drawText("GTA VI SIM", 100, 214, 11, INK);
-drawText("13-YEAR PLAN", 100, 308, 6, MAGENTA);
-
-// SIM chip punch-out (gold), with contact traces and the ghost etched in.
-fillRoundRect(872, 208, 216, 166, 22, [216, 210, 189]);
-fillRoundRect(880, 216, 200, 150, 18, GOLD);
-drawLine(892, 266, 1068, 266, GOLD_LINE);
-drawLine(892, 316, 1068, 316, GOLD_LINE);
-drawLine(946, 228, 946, 354, GOLD_LINE);
-drawLine(1013, 228, 1013, 354, GOLD_LINE);
-drawGhost(980, 291, 56, WHITE, GOLD_DARK, GOLD, null, null);
-
-// Plan table: 7 rows, label left, dotted leader, value right-aligned.
-const rows: Array<[string, string, number, RGB]> = [
-  ["NUMBER", "2013-GTA-VI", 4, INK],
-  ["PLAN", "UNLIMITED PATIENCE", 4, INK],
-  ["DATA", "214 GB - TRAILER 2 (87 VIEWS)", 4, INK],
-  ["SIGNAL", "0 BARS SINCE 2013", 4, INK],
-  ["VALIDITY", "SEP 17, 2013 - NOV 19, 2026", 4, INK],
-  ["DELAYS", "2 EXTENSIONS - NO EXTRA CHARGE", 4, INK],
-  ["PRICE", "$79.99", 6, MAGENTA],
-];
-const tableTop = 400;
-const rowH = 56;
-for (let i = 0; i < rows.length; i++) {
-  const [label, value, scale, vcol] = rows[i];
-  const rowTop = tableTop + i * rowH;
-  const textTop = rowTop + Math.floor((rowH - 7 * scale) / 2);
-  const labelW = textWidth(label, 4);
-  const valueW = textWidth(value, scale);
-  drawText(label, 100, rowTop + Math.floor((rowH - 28) / 2), 4, GRAY);
-  drawText(value, 1100 - valueW, textTop, scale, vcol);
-  // Dotted leader between label and value.
-  const dotY = rowTop + Math.floor(rowH / 2) - 1;
-  const x0 = 100 + labelW + 14;
-  const x1 = 1100 - valueW - 14;
-  for (let x = x0; x < x1; x += 9) fillRect(x, dotY, 3, 3, DOT);
-  // Hairline between rows.
-  if (i < rows.length - 1) fillRect(100, rowTop + rowH - 1, 1000, 1, HAIR);
-}
-
-// Red stamp, rotated -10 degrees: ACTIVATED / NOV 19, 2026.
-const stampCx = 940;
-const stampCy = 880;
-const stampAngle = -10;
-const stampW = 360;
-const stampH = 110;
-const a = (stampAngle * Math.PI) / 180;
-const cosA = Math.cos(a);
-const sinA = Math.sin(a);
-function rotPoint(lx: number, ly: number): [number, number] {
-  return [
-    Math.round(stampCx + lx * cosA - ly * sinA),
-    Math.round(stampCy + lx * sinA + ly * cosA),
-  ];
-}
-const corners: Array<[number, number]> = [
-  rotPoint(-stampW / 2, -stampH / 2),
-  rotPoint(stampW / 2, -stampH / 2),
-  rotPoint(stampW / 2, stampH / 2),
-  rotPoint(-stampW / 2, stampH / 2),
-];
-for (let i = 0; i < 4; i++) {
-  const p = corners[i];
-  const q = corners[(i + 1) % 4];
-  drawThickLine(p[0], p[1], q[0], q[1], 4, RED);
-}
-const inner: Array<[number, number]> = [
-  rotPoint(-stampW / 2 + 10, -stampH / 2 + 10),
-  rotPoint(stampW / 2 - 10, -stampH / 2 + 10),
-  rotPoint(stampW / 2 - 10, stampH / 2 - 10),
-  rotPoint(-stampW / 2 + 10, stampH / 2 - 10),
-];
-for (let i = 0; i < 4; i++) {
-  const p = inner[i];
-  const q = inner[(i + 1) % 4];
-  drawLine(p[0], p[1], q[0], q[1], RED);
-}
-drawTextRotated("ACTIVATED", stampCx, stampCy - 22, stampAngle, 6, RED);
-drawTextRotated("NOV 19, 2026", stampCx, stampCy + 26, stampAngle, 4, RED);
-
-// Barcode + ICCID, bottom-left of the card.
-const barPattern = [3, 1, 2, 1, 1, 3, 2, 2, 1, 1, 4, 1, 2, 3, 1, 1, 2, 1, 3, 1, 1, 2, 4, 1, 1, 3, 2, 1, 1, 2, 1, 3, 1, 2, 1, 1, 4, 2, 1, 1, 3, 1, 2, 1, 1, 3, 2, 2, 1, 1];
-let bx = 100;
-let bi = 0;
-while (bx < 560) {
-  const bw = barPattern[bi % barPattern.length];
-  if (bi % 2 === 0) fillRect(bx, 860, bw, 56, BLACK);
-  bx += bw;
-  bi++;
-}
-drawText("ICCID 8901 2013 1119 2026", 100, 930, 3, [74, 74, 66]);
-
-// Fine print.
-const fine = "COVERAGE NOT GUARANTEED. THIS SIM WAITED LONGER THAN ITS OWN VALIDITY.";
-drawText(fine, Math.floor((W - textWidth(fine, 2)) / 2), 986, 2, FINE);
-
-// Payoff band (magenta), bottom corners rounded, top corners square.
-fillRoundRect(60, 1024, 1080, 126, 36, MAGENTA);
-fillRect(60, 1024, 1080, 76, MAGENTA);
-drawGhost(150, 1087, 84, WHITE, MAGENTA_DARK, MAGENTA, WHITE, MAGENTA);
-const band1 = "TOPPED UP $250 BY MY AI AGENT";
-const band2 = "ON MAKE.FUN";
-drawText(band1, 200 + Math.floor((900 - textWidth(band1, 5)) / 2), 1042, 5, WHITE);
-drawText(band2, 200 + Math.floor((900 - textWidth(band2, 5)) / 2), 1082, 5, WHITE);
-
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
-fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(outDir, "meme.png"), encodePNG(W, H, fb));
-fs.copyFileSync(path.join(botDir, "POST.json"), path.join(outDir, "POST.json"));
-
-if (preview480) {
-  const pw = 480;
-  const ph = 480;
-  const small = Buffer.alloc(pw * ph * 3);
-  for (let y = 0; y < ph; y++) {
-    for (let x = 0; x < pw; x++) {
-      const sx = Math.floor((x * W) / pw);
-      const sy = Math.floor((y * H) / ph);
-      const si = (sy * W + sx) * 3;
-      const di = (y * pw + x) * 3;
-      small[di] = fb[si];
-      small[di + 1] = fb[si + 1];
-      small[di + 2] = fb[si + 2];
+// 480x480 preview (box-average downscale, deterministic)
+function downscale480(rgb) {
+  const out = Buffer.alloc(480 * 480 * 3);
+  for (let oy = 0; oy < 480; oy++) {
+    for (let ox = 0; ox < 480; ox++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let n = 0;
+      for (let sy = 0; sy < 3; sy++) {
+        for (let sx = 0; sx < 3; sx++) {
+          const px = Math.min(W - 1, Math.floor(ox * 2.5 + 0.25 + sx));
+          const py = Math.min(H - 1, Math.floor(oy * 2.5 + 0.25 + sy));
+          const o = (py * W + px) * 3;
+          r += rgb[o];
+          g += rgb[o + 1];
+          b += rgb[o + 2];
+          n++;
+        }
+      }
+      const oo = (oy * 480 + ox) * 3;
+      out[oo] = Math.round(r / n);
+      out[oo + 1] = Math.round(g / n);
+      out[oo + 2] = Math.round(b / n);
     }
   }
-  fs.writeFileSync(path.join(outDir, "meme-480.png"), encodePNG(pw, ph, small));
+  return out;
 }
+
+fs.mkdirSync(OUT_DIR, { recursive: true });
+const png = encodePNG(W, H, img);
+fs.writeFileSync(path.join(OUT_DIR, "meme.png"), png);
+fs.writeFileSync(path.join(OUT_DIR, "meme-480.png"), encodePNG(480, 480, downscale480(img)));
+// Keep POST.json alongside the render (unchanged copy, as prior revisions did)
+try {
+  fs.copyFileSync(path.join(BOT_DIR, "POST.json"), path.join(OUT_DIR, "POST.json"));
+} catch (e) {
+  // POST.json missing is not fatal for the render
+}
+console.log("meme.png", png.length, "bytes sha256", crypto.createHash("sha256").update(png).digest("hex"));
